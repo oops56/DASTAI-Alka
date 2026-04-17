@@ -1,329 +1,344 @@
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
 import requests
 import threading
 import time
 import os
+import json
+import csv
 from collections import defaultdict
 
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
 
 app = FastAPI()
 
 ZAP_URL = "http://127.0.0.1:8090"
-
-STATE = {
-    "target": None,
-    "running": False,
-    "seen": set(),
-    "alerts": []
-}
+REPORT_DIR = "reports"
+os.makedirs(REPORT_DIR, exist_ok=True)
 
 
-# ---------------------------
+# ================= STATE =================
+STATE = {"running": False, "target": None}
+SNAPSHOT = None
+
+
+# ================= INPUT =================
 class ScanRequest(BaseModel):
     url: str
 
 
-# ---------------------------
-def safe_alerts(resp):
-    if isinstance(resp, dict):
-        return resp.get("alerts", [])
-    return []
+# ================= OWASP MAPPING =================
+def map_owasp(alert: str):
+
+    a = alert.lower()
+
+    if "sql" in a or "injection" in a:
+        return "A03 - Injection"
+    if "xss" in a:
+        return "A03 - Injection"
+    if "auth" in a or "session" in a:
+        return "A07 - Authentication Failures"
+    if "access" in a or "401" in a or "403" in a:
+        return "A01 - Broken Access Control"
+
+    return "A05 - Security Misconfiguration"
 
 
-# ---------------------------
-def classify(alert):
-    t = alert.lower()
-
-    if "sql" in t:
-        return "SQL Injection"
-    if "xss" in t:
-        return "Cross Site Scripting (XSS)"
-    if "clickjack" in t:
-        return "Clickjacking"
-    if "csp" in t:
-        return "Content Security Policy Issue"
-    if "auth" in t:
-        return "Broken Access Control"
-
-    return "Security Misconfiguration"
-
-
-# ---------------------------
+# ================= SEVERITY =================
 def severity(risk):
+
     r = str(risk).lower()
     if r == "high":
-        return "High"
+        return "HIGH"
     if r == "medium":
-        return "Medium"
-    return "Low"
+        return "MEDIUM"
+    return "LOW"
 
 
-# ---------------------------
-# SOC-LEVEL VULNERABILITY INTELLIGENCE ENGINE
-# ---------------------------
-def vulnerability_profile(category):
+# ================= AI PROMPT ENGINE (DETAILED REMEDIATION) =================
+def ai_engine(alert, url, risk):
 
-    if category == "SQL Injection":
+    a = alert.lower()
+
+    # SQL INJECTION
+    if "sql" in a:
+
         return {
-            "description": (
-                "SQL Injection is a critical database-layer vulnerability that occurs when user-controlled input "
-                "is directly embedded into SQL queries without proper sanitization or parameterization. "
-                "Attackers exploit this weakness by manipulating query structure, allowing them to alter the intended "
-                "database logic. The root cause typically lies in insecure coding practices where dynamic query "
-                "construction is used instead of prepared statements. In advanced exploitation scenarios, attackers "
-                "can bypass authentication mechanisms, extract sensitive datasets, or modify backend records."
-            ),
-            "impact": (
-                "Successful exploitation can result in unauthorized access to sensitive database records, "
-                "complete data exfiltration, data integrity compromise, and authentication bypass. In severe cases, "
-                "it may lead to full database takeover and backend system compromise."
-            ),
+            "what_is_it": "SQL Injection is a vulnerability where attacker-controlled input is executed as SQL query.",
+            "technical_description": "Occurs when user input is directly concatenated into SQL statements.",
+            "root_cause": "Dynamic SQL query construction without parameterization.",
+            "attack_scenario": "Attacker injects ' OR 1=1 -- to bypass authentication.",
+            "business_impact": "Database leakage, credential theft, full DB compromise.",
             "remediation": [
-                "Enforce parameterized queries or prepared statements for all database interactions.",
-                "Eliminate dynamic SQL query construction using string concatenation.",
-                "Apply strict input validation and whitelist-based filtering mechanisms.",
-                "Restrict database privileges using least-privilege access control principles."
+                "Replace all raw SQL queries with parameterized prepared statements",
+                "Disable string concatenation in SQL execution layer",
+                "Use ORM (SQLAlchemy/Hibernate) instead of raw queries",
+                "Restrict DB user privileges (SELECT only where needed)",
+                "Enable database query logging + anomaly detection"
+            ],
+            "prevention": [
+                "Integrate SAST tools in CI/CD pipeline",
+                "Enable WAF SQL injection rules",
+                "Run periodic penetration tests",
+                "Enforce secure coding standards (OWASP ASVS)"
             ]
         }
 
-    if category == "Cross Site Scripting (XSS)":
+    # XSS
+    if "xss" in a:
+
         return {
-            "description": (
-                "Cross-Site Scripting (XSS) is a client-side injection vulnerability where attackers inject malicious "
-                "JavaScript into web applications that is later executed in the victim's browser. This occurs when "
-                "applications fail to properly encode or sanitize user-generated content before rendering it in HTML. "
-                "The root cause is improper output encoding and lack of contextual input handling. Attackers exploit "
-                "this flaw to execute scripts in the context of trusted sessions."
-            ),
-            "impact": (
-                "Exploitation may lead to session hijacking, credential theft, unauthorized actions on behalf of users, "
-                "defacement of web content, and redirection to malicious domains."
-            ),
+            "what_is_it": "Cross-Site Scripting (XSS) allows attackers to inject malicious JavaScript into web pages.",
+            "technical_description": "User input is rendered in browser without proper encoding.",
+            "root_cause": "Missing output encoding and unsafe DOM rendering.",
+            "attack_scenario": "Attacker injects <script>alert(1)</script> into input field.",
+            "business_impact": "Session hijacking, cookie theft, UI manipulation.",
             "remediation": [
-                "Apply context-aware output encoding for all user-generated content.",
-                "Implement a strict Content Security Policy (CSP).",
-                "Use secure frameworks that automatically escape HTML output.",
-                "Sanitize and validate all inputs using trusted security libraries."
+                "Escape HTML output using context-aware encoding",
+                "Implement Content Security Policy (CSP: script-src 'self')",
+                "Sanitize inputs using DOMPurify or equivalent",
+                "Disable inline JavaScript execution completely",
+                "Use auto-escaping frameworks (React/Angular)"
+            ],
+            "prevention": [
+                "Enable CSP reporting mode",
+                "Perform automated XSS scanning in CI/CD",
+                "Use secure templating engines only"
             ]
         }
 
-    if category == "Clickjacking":
+    # ACCESS CONTROL
+    if "access" in a or "auth" in a or "403" in a or "401" in a:
+
         return {
-            "description": (
-                "Clickjacking is a UI redress attack where a user is tricked into clicking hidden or disguised elements "
-                "on a webpage. This is typically achieved by embedding the target application inside invisible or "
-                "translucent iframes layered over malicious content. The vulnerability exists when applications allow "
-                "themselves to be framed by external domains."
-            ),
-            "impact": (
-                "Attackers may force users to perform unintended actions such as account changes, fund transfers, "
-                "or enabling unauthorized permissions without their knowledge."
-            ),
+            "what_is_it": "Broken Access Control occurs when users can access resources they should not.",
+            "technical_description": "Server fails to validate authorization for protected endpoints.",
+            "root_cause": "Missing or inconsistent server-side authorization checks.",
+            "attack_scenario": "Attacker modifies URL /admin or API ID to access restricted data.",
+            "business_impact": "Data exposure, privilege escalation, account takeover.",
             "remediation": [
-                "Set X-Frame-Options header to DENY or SAMEORIGIN.",
-                "Implement CSP frame-ancestors directive for modern browsers.",
-                "Prevent sensitive pages from being embedded in iframes.",
-                "Use UI-based click validation mechanisms where applicable."
+                "Enforce server-side authorization on every API request",
+                "Implement RBAC (Role-Based Access Control)",
+                "Validate JWT signature and expiration on every request",
+                "Prevent IDOR by validating object ownership",
+                "Centralize authorization middleware"
+            ],
+            "prevention": [
+                "Security unit tests for privilege escalation",
+                "Periodic access control audits",
+                "Zero-trust API design"
             ]
         }
 
-    if category == "Content Security Policy Issue":
-        return {
-            "description": (
-                "A weak or missing Content Security Policy (CSP) allows browsers to load and execute untrusted scripts "
-                "from external or inline sources. CSP acts as a critical browser-side security control that restricts "
-                "resource loading behavior. Misconfiguration significantly increases exposure to script injection attacks."
-            ),
-            "impact": (
-                "Attackers can inject and execute malicious scripts, leading to data theft, session compromise, "
-                "and full client-side exploitation."
-            ),
-            "remediation": [
-                "Define strict CSP rules such as default-src 'self'.",
-                "Eliminate unsafe-inline and unsafe-eval directives.",
-                "Restrict script sources to trusted domains only.",
-                "Use nonce or hash-based CSP enforcement."
-            ]
-        }
-
-    if category == "Broken Access Control":
-        return {
-            "description": (
-                "Broken Access Control occurs when an application fails to properly enforce authorization rules. "
-                "This allows users to access restricted resources or perform actions beyond their intended privileges. "
-                "The root cause is missing or improperly implemented server-side authorization checks."
-            ),
-            "impact": (
-                "Attackers may gain unauthorized access to sensitive data, escalate privileges, modify records, "
-                "or perform administrative actions."
-            ),
-            "remediation": [
-                "Enforce server-side authorization checks for every request.",
-                "Implement Role-Based Access Control (RBAC) or Attribute-Based Access Control (ABAC).",
-                "Validate and verify JWT/session permissions correctly.",
-                "Monitor and log unauthorized access attempts."
-            ]
-        }
-
+    # DEFAULT
     return {
-        "description": (
-            "Security misconfiguration refers to improper or insecure application/server settings that expose "
-            "systems to potential exploitation. This typically occurs due to default configurations, enabled debug "
-            "features, or unnecessary services being exposed to external users."
-        ),
-        "impact": (
-            "May result in information disclosure, unauthorized access, or exposure of internal system components."
-        ),
+        "what_is_it": "Security misconfiguration or weak validation issue.",
+        "technical_description": "Application exposes insecure configuration or missing validation.",
+        "root_cause": "Improper default configuration or missing hardening.",
+        "attack_scenario": "Attacker exploits exposed debug endpoints or weak headers.",
+        "business_impact": "System exposure and potential compromise.",
         "remediation": [
-            "Disable debug and development modes in production environments.",
-            "Harden server and application configuration settings.",
-            "Remove unused services, endpoints, and components.",
-            "Follow OWASP secure configuration best practices."
+            "Disable debug mode in production",
+            "Harden HTTP headers (CSP, HSTS, X-Frame-Options)",
+            "Remove unused endpoints",
+            "Apply CIS benchmark configuration"
+        ],
+        "prevention": [
+            "Regular configuration audits",
+            "Infrastructure hardening automation",
+            "Security baseline enforcement"
         ]
     }
 
 
-# ---------------------------
-def alert_stream():
+# ================= FETCH ZAP =================
+def fetch_alerts():
 
-    while STATE["running"]:
-        try:
-            r = requests.get(
-                f"{ZAP_URL}/JSON/core/view/alerts/",
-                params={"baseurl": STATE["target"], "count": 9999},
-                timeout=10
-            ).json()
+    try:
+        r = requests.get(
+            f"{ZAP_URL}/JSON/core/view/alerts/",
+            params={"count": 1000},
+            timeout=10
+        ).json()
 
-            for a in safe_alerts(r):
+        if isinstance(r, dict):
+            return r.get("alerts", [])
 
-                if not isinstance(a, dict):
-                    continue
+        return []
 
-                alert = a.get("alert", "")
-                url = a.get("url", "")
-                risk = a.get("risk", "Low")
-
-                key = f"{alert}|{url}"
-                if key in STATE["seen"]:
-                    continue
-
-                STATE["seen"].add(key)
-
-                category = classify(alert)
-                profile = vulnerability_profile(category)
-
-                STATE["alerts"].append({
-                    "category": category,
-                    "alert": alert,
-                    "url": url,
-                    "risk": severity(risk),
-                    "description": profile["description"],
-                    "impact": profile["impact"],
-                    "remediation": profile["remediation"]
-                })
-
-        except:
-            pass
-
-        time.sleep(2)
+    except:
+        return []
 
 
-# ---------------------------
+# ================= SCAN ENGINE =================
+def run_scan(url):
+
+    global SNAPSHOT
+
+    raw = fetch_alerts()
+
+    grouped = defaultdict(lambda: {
+        "alerts": [],
+        "ai": {},
+        "owasp": "",
+        "severity": ""
+    })
+
+    for a in raw:
+
+        if not isinstance(a, dict):
+            continue
+
+        alert = a.get("alert", "")
+        u = a.get("url", "")
+        risk = severity(a.get("risk", ""))
+
+        ai = ai_engine(alert, u, risk)
+        owasp = map_owasp(alert)
+
+        grouped[alert]["alerts"].append({
+            "url": u,
+            "risk": risk
+        })
+
+        grouped[alert]["ai"] = ai
+        grouped[alert]["owasp"] = owasp
+        grouped[alert]["severity"] = risk
+
+    SNAPSHOT = {
+        "target": url,
+        "generated_at": time.time(),
+        "data": grouped
+    }
+
+    STATE["running"] = False
+
+
+# ================= API =================
 @app.post("/scan")
 def scan(req: ScanRequest):
 
-    STATE["target"] = req.url
-    STATE["alerts"] = []
-    STATE["seen"] = set()
+    if STATE["running"]:
+        return {"error": "scan_running"}
+
     STATE["running"] = True
+    STATE["target"] = req.url
 
-    def boot():
-        try:
-            requests.get(f"{ZAP_URL}/JSON/core/action/accessUrl/", params={"url": req.url})
-            requests.get(f"{ZAP_URL}/JSON/spider/action/scan/", params={"url": req.url})
-            threading.Thread(target=alert_stream, daemon=True).start()
-        except:
-            STATE["running"] = False
-
-    threading.Thread(target=boot, daemon=True).start()
+    threading.Thread(target=run_scan, args=(req.url,), daemon=True).start()
 
     return {"status": "scan_started"}
 
 
-# ---------------------------
-def group(alerts):
-    grouped = defaultdict(list)
-    for a in alerts:
-        grouped[a["category"]].append(a)
-    return grouped
+@app.get("/results")
+def results():
+    return SNAPSHOT or {"error": "no_data"}
 
 
-# ---------------------------
-def generate_pdf(alerts, filename="SOC_Detailed_Report.pdf"):
-
-    path = os.path.join(os.getcwd(), filename)
+# ================= PDF EXPORT =================
+def export_pdf(path):
 
     doc = SimpleDocTemplate(path, pagesize=A4)
     styles = getSampleStyleSheet()
-    wrap = ParagraphStyle(name="wrap", fontSize=9, leading=11)
 
     elements = []
 
-    elements.append(Paragraph("🛡 SOC SECURITY REPORT (DETAILED)", styles["Title"]))
+    elements.append(Paragraph("ENTERPRISE SECURITY REPORT", styles["Title"]))
     elements.append(Spacer(1, 10))
 
-    grouped = group(alerts)
+    for k, v in SNAPSHOT["data"].items():
 
-    for cat, items in grouped.items():
+        elements.append(Paragraph(f"<b>{k}</b>", styles["Heading2"]))
+        elements.append(Paragraph(f"OWASP: {v['owasp']}", styles["Normal"]))
+        elements.append(Paragraph(f"Severity: {v['severity']}", styles["Normal"]))
 
-        elements.append(Paragraph(f"🔴 {cat}", styles["Heading2"]))
-        elements.append(Spacer(1, 6))
+        elements.append(Paragraph(f"WHAT IS IT: {v['ai']['what_is_it']}", styles["Normal"]))
+        elements.append(Paragraph(f"IMPACT: {v['ai']['business_impact']}", styles["Normal"]))
 
-        elements.append(Paragraph("<b>Affected Endpoints:</b>", wrap))
-        for u in set(i["url"] for i in items):
-            elements.append(Paragraph(f"• {u}", wrap))
+        elements.append(Paragraph("<b>Remediation (Very Specific):</b>", styles["Normal"]))
+        for r in v["ai"]["remediation"]:
+            elements.append(Paragraph(f"• {r}", styles["Normal"]))
 
-        elements.append(Spacer(1, 6))
+        table = [["URL", "Risk"]]
+        for a in v["alerts"]:
+            table.append([a["url"], a["risk"]])
 
-        elements.append(Paragraph("<b>Description:</b>", wrap))
-        elements.append(Paragraph(items[0]["description"], wrap))
+        t = Table(table)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.grey),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.whitesmoke),
+            ("GRID", (0,0), (-1,-1), 0.5, colors.black),
+        ]))
 
-        elements.append(Spacer(1, 5))
-
-        elements.append(Paragraph("<b>Impact:</b>", wrap))
-        elements.append(Paragraph(items[0]["impact"], wrap))
-
-        elements.append(Spacer(1, 5))
-
-        elements.append(Paragraph(f"<b>Severity:</b> {items[0]['risk']}", wrap))
-
-        elements.append(Spacer(1, 6))
-
-        elements.append(Paragraph("<b>Remediation:</b>", wrap))
-        for r in items[0]["remediation"]:
-            elements.append(Paragraph(f"• {r}", wrap))
-
-        elements.append(Spacer(1, 12))
-        elements.append(Paragraph("─" * 100, wrap))
-        elements.append(Spacer(1, 10))
+        elements.append(t)
+        elements.append(Spacer(1, 15))
 
     doc.build(elements)
 
-    return path
+
+# ================= CSV =================
+def export_csv(path):
+
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["Category", "URL", "Risk", "OWASP"])
+
+        for k, v in SNAPSHOT["data"].items():
+            for a in v["alerts"]:
+                w.writerow([k, a["url"], a["risk"], v["owasp"]])
 
 
-# ---------------------------
-@app.get("/download-pdf")
-def download_pdf():
+# ================= HTML =================
+def export_html(path):
 
-    if not STATE["alerts"]:
-        return {"error": "No data found"}
+    html = "<h1>Enterprise Security Report</h1>"
 
-    file = generate_pdf(STATE["alerts"])
+    for k, v in SNAPSHOT["data"].items():
 
-    return FileResponse(file, media_type="application/pdf")
+        html += f"<h2>{k}</h2>"
+        html += f"<p>{v['ai']['what_is_it']}</p>"
+        html += f"<p>{v['ai']['business_impact']}</p>"
+
+        html += "<table border='1'><tr><th>URL</th><th>Risk</th></tr>"
+
+        for a in v["alerts"]:
+            html += f"<tr><td>{a['url']}</td><td>{a['risk']}</td></tr>"
+
+        html += "</table>"
+
+    with open(path, "w") as f:
+        f.write(html)
+
+
+# ================= JSON =================
+def export_json(path):
+
+    with open(path, "w") as f:
+        json.dump(SNAPSHOT, f, indent=2)
+
+
+# ================= DOWNLOAD =================
+@app.get("/download")
+def download(fmt: str = "pdf"):
+
+    if not SNAPSHOT:
+        return {"error": "no_data"}
+
+    path = os.path.join(REPORT_DIR, f"report_{int(time.time())}.{fmt}")
+
+    if fmt == "pdf":
+        export_pdf(path)
+    elif fmt == "csv":
+        export_csv(path)
+    elif fmt == "html":
+        export_html(path)
+    elif fmt == "json":
+        export_json(path)
+    else:
+        return {"error": "invalid_format"}
+
+    return FileResponse(path)
