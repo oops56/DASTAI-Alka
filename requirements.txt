@@ -3,6 +3,6 @@ uvicorn
 streamlit
 pandas
 requests
-python-zapv2
+zaproxy
 reportlab
 openpyxl
