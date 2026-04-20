@@ -1,1 +1,8 @@
-
+fastapi
+uvicorn
+streamlit
+pandas
+requests
+python-zapv2
+reportlab
+openpyxl
