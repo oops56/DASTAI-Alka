@@ -3,7 +3,10 @@ import requests
 import os
 import time
 
-API = os.getenv("API_URL", "https://dastai-alka-1.onrender.com/")
+# =========================
+# CONFIG (FIXED URL BUG)
+# =========================
+API = os.getenv("API_URL", "https://dastai-alka-1.onrender.com").rstrip("/")
 
 # =========================
 # PAGE CONFIG
@@ -32,12 +35,11 @@ h1, h2, h3 { color: #6d28d9 !important; }
 """, unsafe_allow_html=True)
 
 # =========================
-# SAFE API CALL
+# SAFE API CALLS
 # =========================
 def safe_post(url, files=None, params=None):
     try:
-        with st.spinner("Processing..."):
-            r = requests.post(url, files=files, params=params, timeout=600)
+        r = requests.post(url, files=files, params=params, timeout=600)
 
         if r.status_code != 200:
             return None, f"HTTP {r.status_code}: {r.text}"
@@ -52,6 +54,17 @@ def safe_post(url, files=None, params=None):
     except Exception as e:
         return None, str(e)
 
+
+def safe_get(url):
+    try:
+        r = requests.get(url, timeout=60)
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except:
+        return None
+
+
 # =========================
 # HEALTH CHECK
 # =========================
@@ -62,6 +75,7 @@ def check_backend():
     except:
         return False
 
+
 # =========================
 # HEADER
 # =========================
@@ -70,10 +84,10 @@ st.title("🛡️ AI Security Intelligence Platform")
 if check_backend():
     st.success("✓ Backend Connected")
 else:
-    st.error("❌ Backend Not Running")
+    st.error("❌ Backend Not Reachable")
 
 # =========================
-# SESSION STATE INIT
+# SESSION STATE
 # =========================
 if "scan_id" not in st.session_state:
     st.session_state.scan_id = None
@@ -85,7 +99,7 @@ if "scan_id" not in st.session_state:
 # =========================
 task = st.sidebar.radio(
     "Modules",
-    ["Dashboard", "Authentication", "False Positive", "Prioritization", "Scan", "Reports"]
+    ["Dashboard", "Scan", "Reports"]
 )
 
 # =========================
@@ -95,67 +109,7 @@ if task == "Dashboard":
     st.write("AI Security Platform with ZAP + AI + Automation")
 
 # =========================
-# AUTH
-# =========================
-elif task == "Authentication":
-
-    file = st.file_uploader("Upload Logs", type=["csv", "xlsx"])
-
-    if st.button("Analyze"):
-        if file:
-            data, err = safe_post(
-                f"{API}/full-analysis",
-                files={"file": file},
-                params={"target": ""}
-            )
-
-            if err:
-                st.error(err)
-            else:
-                st.json(data.get("auth", {}))
-
-# =========================
-# FALSE POSITIVE
-# =========================
-elif task == "False Positive":
-
-    file = st.file_uploader("Upload Findings", type=["csv", "xlsx"])
-
-    if st.button("Process"):
-        if file:
-            data, err = safe_post(
-                f"{API}/full-analysis",
-                files={"file": file},
-                params={"target": ""}
-            )
-
-            if err:
-                st.error(err)
-            else:
-                st.json(data.get("false_positive", {}))
-
-# =========================
-# PRIORITIZATION
-# =========================
-elif task == "Prioritization":
-
-    file = st.file_uploader("Upload Scan Data", type=["csv", "xlsx"])
-
-    if st.button("Rank"):
-        if file:
-            data, err = safe_post(
-                f"{API}/full-analysis",
-                files={"file": file},
-                params={"target": ""}
-            )
-
-            if err:
-                st.error(err)
-            else:
-                st.json(data.get("prioritization", {}))
-
-# =========================
-# 🚀 FIXED SCAN MODULE (NO CRASH + LIVE PROGRESS)
+# 🚀 SCAN MODULE (FIXED)
 # =========================
 elif task == "Scan":
 
@@ -163,127 +117,96 @@ elif task == "Scan":
 
     target = st.text_input("Target URL", placeholder="http://testphp.vulnweb.com")
 
-    # =========================
     # START SCAN
-    # =========================
     if st.button("Start Scan"):
 
         if not target:
-            st.error("Please enter target URL")
-
+            st.error("Enter target URL")
         else:
             data, err = safe_post(
                 f"{API}/start-scan",
                 params={"target": target}
             )
 
-            # ✅ SAFE CHECK (FIX FOR YOUR ERROR)
-            if err or data is None:
-                st.error(f"Scan failed: {err}")
-                st.stop()
-
-            scan_id = data.get("scan_id")
-
-            if not scan_id:
-                st.error("Backend did not return scan_id")
-                st.stop()
-
-            st.session_state.scan_id = scan_id
-            st.session_state.scan_done = False
-            st.session_state.scan_data = None
-
-            st.success(f"Scan started: {scan_id}")
+            if err or not data:
+                st.error(f"Failed: {err}")
+            else:
+                st.session_state.scan_id = data["scan_id"]
+                st.session_state.scan_done = False
+                st.session_state.scan_data = None
+                st.success(f"Scan started: {data['scan_id']}")
 
     # =========================
-    # LIVE PROGRESS TRACKING
+    # PROGRESS (NON-BLOCKING)
     # =========================
     if st.session_state.scan_id:
 
         scan_id = st.session_state.scan_id
 
-        progress_bar = st.progress(0)
-        status_box = st.empty()
-        alert_box = st.empty()
+        st.subheader("📡 Scan Progress")
 
-        while True:
+        data = safe_get(f"{API}/scan-status/{scan_id}")
 
-            try:
-                r = requests.get(f"{API}/scan-status/{scan_id}")
+        if not data:
+            st.warning("Waiting for backend...")
+        else:
+            status = data.get("status", "unknown")
+            progress = int(data.get("progress", 0))
 
-                if r.status_code != 200:
-                    st.error("Failed to fetch scan status")
-                    break
+            st.progress(progress / 100)
+            st.info(f"Status: {status} ({progress}%)")
 
-                data = r.json()
+            alerts = data.get("alerts", [])
+            st.write(f"Alerts: {len(alerts)}")
 
-                status = data.get("status", "unknown")
-                progress = data.get("progress", 0)
+            if status == "done":
+                st.session_state.scan_done = True
+                st.session_state.scan_data = data
 
-                progress_bar.progress(progress / 100)
-                status_box.info(f"Status: {status} | Progress: {progress}%")
+            elif status == "error":
+                st.error(data.get("error", "Scan failed"))
 
-                alerts = data.get("alerts", [])
-                alert_box.write(f"Alerts Found: {len(alerts)}")
-
-                if status == "done":
-                    st.session_state.scan_done = True
-                    st.session_state.scan_data = data
-                    break
-
-                if status == "error":
-                    st.error(data.get("error", "Scan failed"))
-                    break
-
-                time.sleep(2)
-
-            except Exception as e:
-                st.error(str(e))
-                break
+        # 🔁 AUTO REFRESH (IMPORTANT FIX)
+        if not st.session_state.scan_done:
+            time.sleep(2)
+            st.rerun()
 
     # =========================
-    # DOWNLOAD SECTION (ONLY AFTER SCAN)
+    # RESULTS
     # =========================
     if st.session_state.scan_done:
 
-        st.success("✅ Scan Completed Successfully")
+        st.success("✅ Scan Completed")
+
+        st.subheader("📊 Results")
+        st.json(st.session_state.scan_data)
 
         st.subheader("📥 Download Reports")
 
-        cols = st.columns(4)
-        types = ["json", "csv", "html", "pdf"]
+        for t in ["json", "csv"]:
+            try:
+                r = requests.get(f"{API}/download/{t}")
 
-        for i, t in enumerate(types):
+                if r.status_code == 200:
+                    st.download_button(
+                        f"Download {t.upper()}",
+                        data=r.content,
+                        file_name=f"report.{t}"
+                    )
+                else:
+                    st.warning(f"{t} not ready")
 
-            with cols[i]:
-
-                try:
-                    r = requests.get(f"{API}/download/{t}")
-
-                    if r.status_code == 200:
-                        st.download_button(
-                            f"⬇ {t.upper()}",
-                            data=r.content,
-                            file_name=f"security_report.{t}",
-                            mime="application/octet-stream"
-                        )
-                    else:
-                        st.button(f"{t.upper()} Not Ready", disabled=True)
-
-                except:
-                    st.button(f"{t.upper()} Error", disabled=True)
-
-        st.subheader("📊 Scan Result")
-        st.json(st.session_state.scan_data)
+            except:
+                st.error(f"{t} download error")
 
 # =========================
-# REPORTS PAGE
+# REPORTS
 # =========================
 elif task == "Reports":
 
     st.header("📥 Reports")
 
-    for t in ["json", "csv", "html", "pdf"]:
-
+    for t in ["json", "csv"]:
         try:
             r = requests.get(f"{API}/download/{t}")
 
@@ -291,8 +214,7 @@ elif task == "Reports":
                 st.download_button(
                     f"Download {t.upper()}",
                     data=r.content,
-                    file_name=f"report.{t}",
-                    mime="application/octet-stream"
+                    file_name=f"report.{t}"
                 )
             else:
                 st.warning(f"{t} not available")
