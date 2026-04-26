@@ -70,6 +70,16 @@ def run_scan(scan_id, target):
         scans[scan_id]["error"] = str(e)
 
 # -------------------
+@app.get("/")
+def home():
+    return {
+        "status": "running",
+        "message": "API is working on Render"
+    }
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 @app.post("/start-scan")
 def start_scan(target: str):
 
