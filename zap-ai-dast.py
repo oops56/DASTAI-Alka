@@ -23,7 +23,7 @@ def zap_get(endpoint, params=None):
             "Tunnel is misrouting requests."
         )
     if "error" in spider:
-    raise Exception(f"Spider failed due to tunnel issue: {spider}")
+        raise Exception(f"Spider failed due to tunnel issue: {spider}")
 
     return r.json()
 
