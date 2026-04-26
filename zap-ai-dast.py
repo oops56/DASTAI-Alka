@@ -6,7 +6,7 @@ from threading import Thread
 
 app = FastAPI()
 
-ZAP_PROXY = "http://YOUR_IP:8090"
+ZAP_PROXY = "None"
 
 scans = {}
 
