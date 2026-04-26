@@ -1,12 +1,13 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, FileResponse
 from zapv2 import ZAPv2
-import uuid, time, os, json, csv
+import uuid, time, os, json
 from threading import Thread
 
 app = FastAPI()
 
-ZAP_PROXY = "https://asian-placed-notebooks-briefing.trycloudflare.com/"
+# ✅ MUST BE LOCAL ZAP ONLY
+ZAP_PROXY = "http://127.0.0.1:8090"
 
 scans = {}
 
@@ -26,10 +27,12 @@ def run_scan(scan_id, target):
         )
 
         scans[scan_id]["status"] = "starting"
+        scans[scan_id]["progress"] = 5
 
         zap.urlopen(target)
         time.sleep(2)
 
+        # -------------------
         scans[scan_id]["status"] = "spidering"
         spider_id = zap.spider.scan(target)
 
@@ -37,6 +40,7 @@ def run_scan(scan_id, target):
             scans[scan_id]["progress"] = int(zap.spider.status(spider_id))
             time.sleep(2)
 
+        # -------------------
         scans[scan_id]["status"] = "scanning"
         ascan_id = zap.ascan.scan(target)
 
@@ -44,30 +48,34 @@ def run_scan(scan_id, target):
             scans[scan_id]["progress"] = int(zap.ascan.status(ascan_id))
             time.sleep(3)
 
+        # -------------------
         alerts_raw = zap.core.alerts()
 
-        alerts = [
-            {
-                "alert": a["alert"],
-                "risk": a["risk"],
-                "url": a["url"]
-            }
-            for a in alerts_raw
-        ]
+        alerts = []
+        for a in alerts_raw:
+            alerts.append({
+                "alert": a.get("alert", ""),
+                "risk": a.get("risk", ""),
+                "url": a.get("url", "")
+            })
 
-        scans[scan_id] = {
+        result = {
             "status": "done",
             "progress": 100,
             "alerts": alerts
         }
 
+        scans[scan_id] = result
+
         # save report
         with open(f"{REPORT_DIR}/report.json", "w") as f:
-            json.dump(alerts, f, indent=2)
+            json.dump(result, f, indent=2)
 
     except Exception as e:
-        scans[scan_id]["status"] = "error"
-        scans[scan_id]["error"] = str(e)
+        scans[scan_id] = {
+            "status": "error",
+            "error": str(e)
+        }
 
 # -------------------
 @app.get("/")
@@ -80,6 +88,8 @@ def home():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+# -------------------
 @app.post("/start-scan")
 def start_scan(target: str):
 
@@ -90,9 +100,12 @@ def start_scan(target: str):
         "progress": 0
     }
 
-    Thread(target=run_scan, args=(scan_id, target)).start()
+    Thread(target=run_scan, args=(scan_id, target), daemon=True).start()
 
-    return {"status": "success", "data": {"scan_id": scan_id}}
+    return {
+        "status": "success",
+        "data": {"scan_id": scan_id}
+    }
 
 # -------------------
 @app.get("/scan-status/{scan_id}")
