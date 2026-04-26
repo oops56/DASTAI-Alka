@@ -112,4 +112,5 @@ def start_scan(target: str):
 
 @app.get("/scan/{scan_id}")
 def scan_status(scan_id: str):
-    return scans.get(scan_id, {"status": "not_found"})
+    scans = load_scans()   # ALWAYS reload
+    return scans.get(scan_id, {"status": "not_found", "progress": 0})
