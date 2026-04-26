@@ -6,3 +6,4 @@ requests
 zaproxy
 reportlab
 openpyxl
+python-multipart
