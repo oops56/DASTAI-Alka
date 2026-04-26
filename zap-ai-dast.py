@@ -22,6 +22,8 @@ def zap_get(endpoint, params=None):
             "Cloudflare returned HTML instead of ZAP API. "
             "Tunnel is misrouting requests."
         )
+    if "error" in spider:
+    raise Exception(f"Spider failed due to tunnel issue: {spider}")
 
     return r.json()
 
