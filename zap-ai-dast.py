@@ -16,7 +16,7 @@ app = FastAPI()
 # ZAP_PROXY = "http://127.0.0.1:8090"
 
 # DOCKER / WSL SAFE OPTION
-ZAP_PROXY = "http://host.docker.internal:8090"
+ZAP_PROXY = "http://zap:8090"
 
 # =========================
 # GLOBAL STATE
