@@ -128,6 +128,17 @@ def generate_reports(alerts, prioritization):
 # =========================
 # DOWNLOAD API
 # =========================
+@app.get("/")
+def home():
+    return {"status": "running"}
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
 @app.get("/download/{file_type}")
 def download(file_type: str):
 
