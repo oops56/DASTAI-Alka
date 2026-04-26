@@ -1,307 +1,264 @@
-import streamlit as st
-import requests
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import JSONResponse, FileResponse
+import pandas as pd
+import json
 import os
+import csv
+import uuid
 import time
+import traceback
+from threading import Thread
 
-API = os.getenv("API_URL", "https://dastai-alka.onrender.com/")
+# ⚠️ ZAP is OPTIONAL now (prevents crash on Render)
+try:
+    from zapv2 import ZAPv2
+    ZAP_AVAILABLE = True
+except:
+    ZAP_AVAILABLE = False
 
-# =========================
-# PAGE CONFIG
-# =========================
-st.set_page_config(
-    page_title="AI Security Intelligence Platform",
-    layout="wide",
-    page_icon="🛡️"
-)
-
-# =========================
-# THEME
-# =========================
-st.markdown("""
-<style>
-.stApp { background: #f3f4f6; color: #111827; }
-h1, h2, h3 { color: #6d28d9 !important; }
-
-.stButton>button {
-    background: #a78bfa !important;
-    color: white !important;
-    border-radius: 8px;
-    font-weight: 600;
-}
-</style>
-""", unsafe_allow_html=True)
+app = FastAPI(title="AI Security Pipeline")
 
 # =========================
-# SAFE API CALL
+# CONFIG (SAFE FOR CLOUD)
 # =========================
-def safe_post(url, files=None, params=None):
+ZAP_PROXY = "http://127.0.0.1:8080"
+
+zap = None
+if ZAP_AVAILABLE:
     try:
-        with st.spinner("Processing..."):
-            r = requests.post(url, files=files, params=params, timeout=600)
+        zap = ZAPv2(proxies={"http": ZAP_PROXY, "https": ZAP_PROXY})
+    except:
+        zap = None
 
-        if r.status_code != 200:
-            return None, f"HTTP {r.status_code}: {r.text}"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+REPORT_DIR = os.path.join(BASE_DIR, "reports")
+os.makedirs(REPORT_DIR, exist_ok=True)
 
-        data = r.json()
+scans = {}
 
-        if data.get("status") != "success":
-            return None, data.get("message", "Unknown error")
+# =========================
+# HEALTH CHECK (FIXED)
+# =========================
+@app.get("/health")
+def health():
+    zap_ok = False
 
-        return data.get("data"), None
+    try:
+        if zap:
+            zap.core.version
+            zap_ok = True
+    except:
+        zap_ok = False
+
+    return {
+        "status": "running",
+        "zap_connected": zap_ok,
+        "zap_enabled": zap is not None
+    }
+
+# =========================
+# HELPERS
+# =========================
+def ok(data):
+    return JSONResponse({"status": "success", "data": data})
+
+def fail(msg):
+    return JSONResponse({"status": "error", "message": msg})
+
+# =========================
+# SAFE ALERT NORMALIZER (IMPORTANT FIX)
+# =========================
+def normalize_alerts(alerts_raw):
+    alerts = []
+
+    for a in alerts_raw or []:
+        alerts.append({
+            "alert": a.get("alert", "Unknown"),
+            "risk": a.get("risk", "Low"),
+            "url": a.get("url", ""),
+            "confidence": a.get("confidence", "N/A")
+        })
+
+    return alerts
+
+# =========================
+# REPORT GENERATION (FIXED)
+# =========================
+def generate_reports(alerts):
+
+    json_path = os.path.join(REPORT_DIR, "report.json")
+    csv_path = os.path.join(REPORT_DIR, "report.csv")
+
+    with open(json_path, "w") as f:
+        json.dump({"alerts": alerts}, f, indent=2)
+
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["alert", "risk", "url"])
+
+        for a in alerts:
+            writer.writerow([
+                a.get("alert"),
+                a.get("risk"),
+                a.get("url")
+            ])
+
+# =========================
+# DOWNLOAD
+# =========================
+@app.get("/download/{file_type}")
+def download(file_type: str):
+
+    mapping = {
+        "json": "report.json",
+        "csv": "report.csv"
+    }
+
+    file_name = mapping.get(file_type)
+
+    if not file_name:
+        return fail("Invalid type")
+
+    path = os.path.join(REPORT_DIR, file_name)
+
+    if not os.path.exists(path):
+        return fail("File not found")
+
+    return FileResponse(path)
+
+# =========================
+# SCAN WORKER (FIXED + SAFE)
+# =========================
+def scan_worker(scan_id, target):
+
+    try:
+        scans[scan_id]["status"] = "starting"
+        scans[scan_id]["progress"] = 5
+
+        # Validate URL
+        if not target or not target.startswith("http"):
+            raise Exception("Invalid URL")
+
+        # =========================
+        # IF ZAP NOT AVAILABLE → MOCK MODE
+        # =========================
+        if not zap:
+            time.sleep(2)
+
+            mock_alerts = [
+                {
+                    "alert": "SQL Injection (Mock)",
+                    "risk": "High",
+                    "url": target,
+                    "confidence": "High"
+                },
+                {
+                    "alert": "XSS (Mock)",
+                    "risk": "Medium",
+                    "url": target,
+                    "confidence": "Medium"
+                }
+            ]
+
+            scans[scan_id]["alerts"] = mock_alerts
+            scans[scan_id]["status"] = "done"
+            scans[scan_id]["progress"] = 100
+            generate_reports(mock_alerts)
+            return
+
+        # =========================
+        # REAL ZAP SCAN
+        # =========================
+        zap.core.access_url(target)
+        time.sleep(2)
+
+        # SPIDER
+        scans[scan_id]["status"] = "spider"
+        spider_id = zap.spider.scan(target)
+
+        for _ in range(100):
+            p = int(zap.spider.status(spider_id))
+            scans[scan_id]["progress"] = min(p // 2, 40)
+
+            if p >= 100:
+                break
+            time.sleep(2)
+
+        # ACTIVE SCAN
+        scans[scan_id]["status"] = "active"
+        ascan_id = zap.ascan.scan(target)
+
+        for _ in range(100):
+            p = int(zap.ascan.status(ascan_id))
+            scans[scan_id]["progress"] = 40 + min(p // 2, 60)
+
+            if p >= 100:
+                break
+            time.sleep(3)
+
+        # ALERTS
+        alerts_raw = zap.core.alerts()
+        alerts = normalize_alerts(alerts_raw)
+
+        scans[scan_id]["alerts"] = alerts
+        scans[scan_id]["status"] = "done"
+        scans[scan_id]["progress"] = 100
+
+        generate_reports(alerts)
 
     except Exception as e:
-        return None, str(e)
+        scans[scan_id]["status"] = "error"
+        scans[scan_id]["error"] = str(e)
+        scans[scan_id]["trace"] = traceback.format_exc()
 
 # =========================
-# HEALTH CHECK
+# START SCAN
 # =========================
-def check_backend():
+@app.post("/start-scan")
+def start_scan(target: str):
+
+    scan_id = str(uuid.uuid4())
+
+    scans[scan_id] = {
+        "status": "queued",
+        "progress": 0,
+        "alerts": []
+    }
+
+    Thread(target=scan_worker, args=(scan_id, target), daemon=True).start()
+
+    return ok({"scan_id": scan_id})
+
+# =========================
+# STATUS API
+# =========================
+@app.get("/scan-status/{scan_id}")
+def scan_status(scan_id: str):
+    return scans.get(scan_id, {"status": "not_found"})
+
+# =========================
+# FULL ANALYSIS (SAFE FIX)
+# =========================
+@app.post("/full-analysis")
+async def full_analysis(file: UploadFile = File(...), target: str = ""):
+
     try:
-        r = requests.get(f"{API}/health", timeout=5)
-        return r.status_code == 200
-    except:
-        return False
+        df = pd.read_csv(file.file).fillna("")
 
-# =========================
-# HEADER
-# =========================
-st.title("🛡️ AI Security Intelligence Platform")
+        findings = []
 
-if check_backend():
-    st.success("✓ Backend Connected")
-else:
-    st.error("❌ Backend Not Running")
+        text = str(df).lower()
 
-# =========================
-# SESSION STATE INIT
-# =========================
-if "scan_id" not in st.session_state:
-    st.session_state.scan_id = None
-    st.session_state.scan_done = False
-    st.session_state.scan_data = None
+        if any(x in text for x in ["select", "union", "drop"]):
+            findings.append({"type": "SQL Injection", "severity": "high"})
 
-# =========================
-# SIDEBAR
-# =========================
-task = st.sidebar.radio(
-    "Modules",
-    ["Dashboard", "Authentication", "False Positive", "Prioritization", "Scan", "Reports"]
-)
+        if any(x in text for x in ["<script>", "javascript"]):
+            findings.append({"type": "XSS", "severity": "medium"})
 
-# =========================
-# DASHBOARD
-# =========================
-if task == "Dashboard":
-    st.write("AI Security Platform with ZAP + AI + Automation")
+        return ok({
+            "findings": findings,
+            "scan_count": len(findings)
+        })
 
-# =========================
-# AUTH
-# =========================
-elif task == "Authentication":
-
-    file = st.file_uploader("Upload Logs", type=["csv", "xlsx"])
-
-    if st.button("Analyze"):
-        if file:
-            data, err = safe_post(
-                f"{API}/full-analysis",
-                files={"file": file},
-                params={"target": ""}
-            )
-
-            if err:
-                st.error(err)
-            else:
-                st.json(data.get("auth", {}))
-
-# =========================
-# FALSE POSITIVE
-# =========================
-elif task == "False Positive":
-
-    file = st.file_uploader("Upload Findings", type=["csv", "xlsx"])
-
-    if st.button("Process"):
-        if file:
-            data, err = safe_post(
-                f"{API}/full-analysis",
-                files={"file": file},
-                params={"target": ""}
-            )
-
-            if err:
-                st.error(err)
-            else:
-                st.json(data.get("false_positive", {}))
-
-# =========================
-# PRIORITIZATION
-# =========================
-elif task == "Prioritization":
-
-    file = st.file_uploader("Upload Scan Data", type=["csv", "xlsx"])
-
-    if st.button("Rank"):
-        if file:
-            data, err = safe_post(
-                f"{API}/full-analysis",
-                files={"file": file},
-                params={"target": ""}
-            )
-
-            if err:
-                st.error(err)
-            else:
-                st.json(data.get("prioritization", {}))
-
-# =========================
-# 🚀 FIXED SCAN MODULE (NO CRASH + LIVE PROGRESS)
-# =========================
-elif task == "Scan":
-
-    st.header("🚀 Live Security Scan")
-
-    target = st.text_input("Target URL", placeholder="http://testphp.vulnweb.com")
-
-    # =========================
-    # START SCAN
-    # =========================
-    if st.button("Start Scan"):
-
-        if not target:
-            st.error("Please enter target URL")
-
-        else:
-            data, err = safe_post(
-                f"{API}/start-scan",
-                params={"target": target}
-            )
-
-            # ✅ SAFE CHECK (FIX FOR YOUR ERROR)
-            if err or data is None:
-                st.error(f"Scan failed: {err}")
-                st.stop()
-
-            scan_id = data.get("scan_id")
-
-            if not scan_id:
-                st.error("Backend did not return scan_id")
-                st.stop()
-
-            st.session_state.scan_id = scan_id
-            st.session_state.scan_done = False
-            st.session_state.scan_data = None
-
-            st.success(f"Scan started: {scan_id}")
-
-    # =========================
-    # LIVE PROGRESS TRACKING
-    # =========================
-    if st.session_state.scan_id:
-
-        scan_id = st.session_state.scan_id
-
-        progress_bar = st.progress(0)
-        status_box = st.empty()
-        alert_box = st.empty()
-
-        while True:
-
-            try:
-                r = requests.get(f"{API}/scan-status/{scan_id}")
-
-                if r.status_code != 200:
-                    st.error("Failed to fetch scan status")
-                    break
-
-                data = r.json()
-
-                status = data.get("status", "unknown")
-                progress = data.get("progress", 0)
-
-                progress_bar.progress(progress / 100)
-                status_box.info(f"Status: {status} | Progress: {progress}%")
-
-                alerts = data.get("alerts", [])
-                alert_box.write(f"Alerts Found: {len(alerts)}")
-
-                if status == "done":
-                    st.session_state.scan_done = True
-                    st.session_state.scan_data = data
-                    break
-
-                if status == "error":
-                    st.error(data.get("error", "Scan failed"))
-                    break
-
-                time.sleep(2)
-
-            except Exception as e:
-                st.error(str(e))
-                break
-
-    # =========================
-    # DOWNLOAD SECTION (ONLY AFTER SCAN)
-    # =========================
-    if st.session_state.scan_done:
-
-        st.success("✅ Scan Completed Successfully")
-
-        st.subheader("📥 Download Reports")
-
-        cols = st.columns(4)
-        types = ["json", "csv", "html", "pdf"]
-
-        for i, t in enumerate(types):
-
-            with cols[i]:
-
-                try:
-                    r = requests.get(f"{API}/download/{t}")
-
-                    if r.status_code == 200:
-                        st.download_button(
-                            f"⬇ {t.upper()}",
-                            data=r.content,
-                            file_name=f"security_report.{t}",
-                            mime="application/octet-stream"
-                        )
-                    else:
-                        st.button(f"{t.upper()} Not Ready", disabled=True)
-
-                except:
-                    st.button(f"{t.upper()} Error", disabled=True)
-
-        st.subheader("📊 Scan Result")
-        st.json(st.session_state.scan_data)
-
-# =========================
-# REPORTS PAGE
-# =========================
-elif task == "Reports":
-
-    st.header("📥 Reports")
-
-    for t in ["json", "csv", "html", "pdf"]:
-
-        try:
-            r = requests.get(f"{API}/download/{t}")
-
-            if r.status_code == 200:
-                st.download_button(
-                    f"Download {t.upper()}",
-                    data=r.content,
-                    file_name=f"report.{t}",
-                    mime="application/octet-stream"
-                )
-            else:
-                st.warning(f"{t} not available")
-
-        except Exception as e:
-            st.error(str(e))
-
-# =========================
-# FOOTER
-# =========================
-st.markdown("---")
-st.caption("AI Security Platform")
+    except Exception as e:
+        return fail(str(e))
