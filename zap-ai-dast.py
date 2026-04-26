@@ -17,6 +17,7 @@ app = FastAPI()
 
 # DOCKER / WSL SAFE OPTION
 ZAP_PROXY = "http://zap:8090"
+ZAP_API_URL ="https://vii-medline-companies-convenience.trycloudflare.com"
 
 # =========================
 # GLOBAL STATE
