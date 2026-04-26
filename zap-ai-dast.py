@@ -1,40 +1,50 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, FileResponse
-from zapv2 import ZAPv2
 import uuid, time, os, json, requests
 from threading import Thread
 
 app = FastAPI()
 
 # =========================
-# CONFIG (FIXED FOR DOCKER/WSL)
+# CONFIG (Cloudflare URL)
 # =========================
+ZAP_API_URL = "https://vii-medline-companies-convenience.trycloudflare.com"
 
-# Use ONE of these depending on your setup:
-
-# LOCAL MACHINE
-# ZAP_PROXY = "http://127.0.0.1:8090"
-
-# DOCKER / WSL SAFE OPTION
-ZAP_API_URL ="https://vii-medline-companies-convenience.trycloudflare.com"
-
-# =========================
-# GLOBAL STATE
-# =========================
 scans = {}
 
 REPORT_DIR = "reports"
 os.makedirs(REPORT_DIR, exist_ok=True)
 
 # =========================
-# CHECK ZAP IS RUNNING
+# CHECK ZAP
 # =========================
 def check_zap():
     try:
-        r = requests.get(f"{ZAP_PROXY}/JSON/core/view/version/", timeout=5)
+        r = requests.get(
+            f"{ZAP_API_URL}/JSON/core/view/version/",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+            allow_redirects=True
+        )
         return r.status_code == 200
-    except:
+    except Exception:
         return False
+
+# =========================
+# SAFE REQUEST FUNCTION
+# =========================
+def zap_get(endpoint, params=None):
+    try:
+        r = requests.get(
+            f"{ZAP_API_URL}{endpoint}",
+            params=params,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+            allow_redirects=True
+        )
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
 
 # =========================
 # SCAN WORKER
@@ -42,21 +52,12 @@ def check_zap():
 def run_scan(scan_id, target):
 
     try:
-        # 🔥 CHECK BEFORE STARTING
         if not check_zap():
             scans[scan_id] = {
                 "status": "error",
-                "error": "ZAP not reachable on " + ZAP_PROXY
+                "error": f"ZAP not reachable at {ZAP_API_URL}"
             }
             return
-
-        zap = ZAPv2(
-            apikey="",
-            proxies={
-                "http": ZAP_PROXY,
-                "https": ZAP_PROXY
-            }
-        )
 
         scans[scan_id] = {
             "status": "starting",
@@ -67,22 +68,23 @@ def run_scan(scan_id, target):
         # =========================
         # OPEN TARGET
         # =========================
-        zap.urlopen(target)
+        zap_get("/JSON/core/action/accessUrl/", {"url": target})
         time.sleep(2)
 
         # =========================
         # SPIDER
         # =========================
         scans[scan_id]["status"] = "spidering"
-        spider_id = zap.spider.scan(target)
+
+        spider = zap_get("/JSON/spider/action/scan/", {"url": target})
+        spider_id = spider.get("scan")
 
         while True:
-            try:
-                progress = int(zap.spider.status(spider_id))
-            except:
-                progress = 0
+            status = zap_get("/JSON/spider/view/status/", {"scanId": spider_id})
+            progress = int(status.get("status", 0))
 
             scans[scan_id]["progress"] = progress
+
             if progress >= 100:
                 break
             time.sleep(2)
@@ -91,35 +93,34 @@ def run_scan(scan_id, target):
         # ACTIVE SCAN
         # =========================
         scans[scan_id]["status"] = "scanning"
-        ascan_id = zap.ascan.scan(target)
+
+        ascan = zap_get("/JSON/ascan/action/scan/", {"url": target})
+        ascan_id = ascan.get("scan")
 
         while True:
-            try:
-                progress = int(zap.ascan.status(ascan_id))
-            except:
-                progress = 0
+            status = zap_get("/JSON/ascan/view/status/", {"scanId": ascan_id})
+            progress = int(status.get("status", 0))
 
             scans[scan_id]["progress"] = progress
+
             if progress >= 100:
                 break
             time.sleep(3)
 
         # =========================
-        # ALERTS (SAFE)
+        # GET ALERTS
         # =========================
-        try:
-            alerts_raw = zap.core.alerts()
-        except:
-            alerts_raw = []
+        alerts_data = zap_get("/JSON/core/view/alerts/")
+        alerts_raw = alerts_data.get("alerts", [])
 
-        alerts = []
-
-        for a in alerts_raw:
-            alerts.append({
+        alerts = [
+            {
                 "alert": a.get("alert", ""),
                 "risk": a.get("risk", ""),
                 "url": a.get("url", "")
-            })
+            }
+            for a in alerts_raw
+        ]
 
         result = {
             "status": "done",
@@ -142,7 +143,7 @@ def run_scan(scan_id, target):
         }
 
 # =========================
-# API ROUTES
+# ROUTES
 # =========================
 
 @app.get("/")
@@ -156,7 +157,6 @@ def health():
         "zap_connected": check_zap()
     }
 
-# -------------------------
 @app.post("/start-scan")
 def start_scan(target: str):
 
@@ -169,17 +169,15 @@ def start_scan(target: str):
 
     Thread(target=run_scan, args=(scan_id, target), daemon=True).start()
 
-    return JSONResponse({
+    return {
         "status": "success",
-        "data": {"scan_id": scan_id}
-    })
+        "scan_id": scan_id
+    }
 
-# -------------------------
 @app.get("/scan-status/{scan_id}")
 def scan_status(scan_id: str):
     return scans.get(scan_id, {"status": "not_found"})
 
-# -------------------------
 @app.get("/download/json")
 def download_json():
 
