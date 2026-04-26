@@ -1,198 +1,67 @@
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse, FileResponse
-import uuid, time, os, json, requests, traceback
-from threading import Thread
+import streamlit as st
+import requests
+import time
 
-app = FastAPI()
+# 🔥 YOUR RENDER BACKEND URL
+API_URL = "https://dastai-alka-1.onrender.com/"
 
-# =========================
-# CONFIG
-# =========================
-ZAP_API_URL = "https://your-cloudflare-url.trycloudflare.com"
+st.set_page_config(page_title="ZAP Scanner", layout="centered")
 
-scans = {}
-
-REPORT_DIR = "reports"
-os.makedirs(REPORT_DIR, exist_ok=True)
+st.title("🔍 Web Vulnerability Scanner")
+st.subheader("Powered by OWASP ZAP")
 
 # =========================
-# SAFE REQUEST (VERY IMPORTANT)
+# INPUT
 # =========================
-def zap_get(endpoint, params=None):
-    try:
-        r = requests.get(
-            f"{ZAP_API_URL}{endpoint}",
-            params=params,
-            timeout=20,
-            headers={"User-Agent": "Mozilla/5.0"},
-            allow_redirects=True
-        )
-
-        # DEBUG: print raw response
-        print("URL:", r.url)
-        print("STATUS:", r.status_code)
-        print("TEXT:", r.text[:300])
-
-        if not r.text.strip():
-            return {"error": "empty_response"}
-
-        try:
-            return r.json()
-        except Exception:
-            return {"error": "not_json", "raw": r.text[:300]}
-
-    except Exception as e:
-        return {"error": str(e)}
+target = st.text_input("Enter Target URL", "http://testphp.vulnweb.com")
 
 # =========================
-# CHECK ZAP
+# START SCAN
 # =========================
-def check_zap():
-    res = zap_get("/JSON/core/view/version/")
-    return "version" in str(res)
+if st.button("Start Scan"):
 
-# =========================
-# SCAN WORKER
-# =========================
-def run_scan(scan_id, target):
+    res = requests.post(f"{API_URL}/start-scan", params={"target": target})
 
-    try:
-        scans[scan_id] = {
-            "status": "starting",
-            "progress": 0,
-            "alerts": []
-        }
+    if res.status_code == 200:
+        scan_id = res.json()["scan_id"]
+        st.success(f"Scan started: {scan_id}")
+
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
         # =========================
-        # TEST CONNECTIVITY
+        # POLLING LOOP
         # =========================
-        version = zap_get("/JSON/core/view/version/")
-        if "error" in version:
-            raise Exception(f"ZAP not reachable: {version}")
-
-        # =========================
-        # ACCESS TARGET
-        # =========================
-        zap_get("/JSON/core/action/accessUrl/", {"url": target})
-        time.sleep(2)
-
-        # =========================
-        # SPIDER
-        # =========================
-        scans[scan_id]["status"] = "spidering"
-
-        spider = zap_get("/JSON/spider/action/scan/", {"url": target})
-
-        print("SPIDER RESPONSE:", spider)
-
-        spider_id = spider.get("scan")
-        if not spider_id:
-            raise Exception(f"Spider failed: {spider}")
-
         while True:
-            status = zap_get("/JSON/spider/view/status/", {"scanId": spider_id})
-            progress = int(status.get("status", 0))
-            scans[scan_id]["progress"] = progress
+            r = requests.get(f"{API_URL}/scan/{scan_id}")
+            data = r.json()
 
-            if progress >= 100:
+            status = data.get("status")
+            progress = data.get("progress", 0)
+
+            progress_bar.progress(progress)
+            status_text.text(f"Status: {status} | Progress: {progress}%")
+
+            if status in ["done", "error"]:
                 break
 
             time.sleep(2)
 
         # =========================
-        # ACTIVE SCAN
+        # RESULT DISPLAY
         # =========================
-        scans[scan_id]["status"] = "scanning"
+        if status == "done":
+            st.success("Scan Completed")
 
-        ascan = zap_get("/JSON/ascan/action/scan/", {"url": target})
+            alerts = data.get("alerts", [])
 
-        print("ASCAN RESPONSE:", ascan)
+            st.write("### 🔥 Vulnerabilities Found")
+            for a in alerts:
+                st.warning(f"{a.get('risk','')} - {a.get('alert','')}")
+                st.text(a.get("url", ""))
 
-        ascan_id = ascan.get("scan")
-        if not ascan_id:
-            raise Exception(f"Active scan failed: {ascan}")
+        else:
+            st.error(data.get("error", "Scan failed"))
 
-        while True:
-            status = zap_get("/JSON/ascan/view/status/", {"scanId": ascan_id})
-            progress = int(status.get("status", 0))
-            scans[scan_id]["progress"] = progress
-
-            if progress >= 100:
-                break
-
-            time.sleep(3)
-
-        # =========================
-        # ALERTS
-        # =========================
-        alerts_data = zap_get("/JSON/core/view/alerts/")
-        alerts_raw = alerts_data.get("alerts", [])
-
-        alerts = [
-            {
-                "alert": a.get("alert", ""),
-                "risk": a.get("risk", ""),
-                "url": a.get("url", "")
-            }
-            for a in alerts_raw
-        ]
-
-        result = {
-            "status": "done",
-            "progress": 100,
-            "alerts": alerts
-        }
-
-        scans[scan_id] = result
-
-        # SAVE REPORT
-        with open(f"{REPORT_DIR}/report.json", "w") as f:
-            json.dump(result, f, indent=2)
-
-    except Exception as e:
-        scans[scan_id] = {
-            "status": "error",
-            "error": str(e),
-            "trace": traceback.format_exc()
-        }
-
-# =========================
-# ROUTES
-# =========================
-
-@app.get("/")
-def home():
-    return {"status": "running"}
-
-@app.get("/health")
-def health():
-    return {
-        "zap_connected": check_zap()
-    }
-
-@app.post("/start-scan")
-def start_scan(target: str):
-
-    scan_id = str(uuid.uuid4())
-
-    scans[scan_id] = {
-        "status": "queued",
-        "progress": 0
-    }
-
-    Thread(target=run_scan, args=(scan_id, target), daemon=True).start()
-
-    return {"scan_id": scan_id}
-
-@app.get("/scan-status/{scan_id}")
-def scan_status(scan_id: str):
-    return scans.get(scan_id, {"status": "not_found"})
-
-@app.get("/download/json")
-def download():
-    path = f"{REPORT_DIR}/report.json"
-
-    if not os.path.exists(path):
-        return {"error": "No report found"}
-
-    return FileResponse(path)
+    else:
+        st.error("Failed to start scan")
