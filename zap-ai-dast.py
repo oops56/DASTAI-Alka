@@ -5,7 +5,7 @@ from threading import Thread
 app = FastAPI()
 
 # 🔥 CHANGE THIS to your ZAP endpoint
-ZAP_API_URL = " https://vii-medline-companies-convenience.trycloudflare.com"
+ZAP_API_URL = "https://deviant-bracelet-joseph-calvin.trycloudflare.com"
 
 scans = {}
 REPORT_DIR = "reports"
