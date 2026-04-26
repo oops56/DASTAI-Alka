@@ -6,7 +6,7 @@ from threading import Thread
 
 app = FastAPI()
 
-ZAP_PROXY = "https://speech-morris-warriors-colony.trycloudflare.com/"
+ZAP_PROXY = "https://asian-placed-notebooks-briefing.trycloudflare.com/"
 
 scans = {}
 
