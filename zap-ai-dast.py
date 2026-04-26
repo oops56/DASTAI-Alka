@@ -15,22 +15,15 @@ os.makedirs(REPORT_DIR, exist_ok=True)
 # SAFE REQUEST TO ZAP
 # =========================
 def zap_get(endpoint, params=None):
-    try:
-        r = requests.get(
-            f"{ZAP_API_URL}{endpoint}",
-            params=params,
-            timeout=20,
-            headers={"User-Agent": "Mozilla/5.0"},
-            allow_redirects=True
+    r = requests.get(f"{ZAP_API_URL}{endpoint}", params=params)
+
+    if "<!DOCTYPE html>" in r.text:
+        raise Exception(
+            "Cloudflare returned HTML instead of ZAP API. "
+            "Tunnel is misrouting requests."
         )
 
-        try:
-            return r.json()
-        except:
-            return {"error": "not_json", "raw": r.text[:200]}
-
-    except Exception as e:
-        return {"error": str(e)}
+    return r.json()
 
 # =========================
 # SCAN WORKER
