@@ -1,27 +1,55 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, FileResponse
 from zapv2 import ZAPv2
-import uuid, time, os, json
+import uuid, time, os, json, requests
 from threading import Thread
 
 app = FastAPI()
 
 # =========================
-# IMPORTANT: ZAP MUST BE LOCAL
+# CONFIG (FIXED FOR DOCKER/WSL)
 # =========================
-ZAP_PROXY = "http://127.0.0.1:8090"
 
+# Use ONE of these depending on your setup:
+
+# LOCAL MACHINE
+# ZAP_PROXY = "http://127.0.0.1:8090"
+
+# DOCKER / WSL SAFE OPTION
+ZAP_PROXY = "http://host.docker.internal:8090"
+
+# =========================
+# GLOBAL STATE
+# =========================
 scans = {}
 
 REPORT_DIR = "reports"
 os.makedirs(REPORT_DIR, exist_ok=True)
 
 # =========================
-# SAFE SCAN WORKER
+# CHECK ZAP IS RUNNING
+# =========================
+def check_zap():
+    try:
+        r = requests.get(f"{ZAP_PROXY}/JSON/core/view/version/", timeout=5)
+        return r.status_code == 200
+    except:
+        return False
+
+# =========================
+# SCAN WORKER
 # =========================
 def run_scan(scan_id, target):
 
     try:
+        # 🔥 CHECK BEFORE STARTING
+        if not check_zap():
+            scans[scan_id] = {
+                "status": "error",
+                "error": "ZAP not reachable on " + ZAP_PROXY
+            }
+            return
+
         zap = ZAPv2(
             apikey="",
             proxies={
@@ -32,7 +60,7 @@ def run_scan(scan_id, target):
 
         scans[scan_id] = {
             "status": "starting",
-            "progress": 5,
+            "progress": 0,
             "alerts": []
         }
 
@@ -77,7 +105,7 @@ def run_scan(scan_id, target):
             time.sleep(3)
 
         # =========================
-        # GET ALERTS (SAFE PARSING)
+        # ALERTS (SAFE)
         # =========================
         try:
             alerts_raw = zap.core.alerts()
@@ -87,18 +115,12 @@ def run_scan(scan_id, target):
         alerts = []
 
         for a in alerts_raw:
-            try:
-                alerts.append({
-                    "alert": a.get("alert", ""),
-                    "risk": a.get("risk", ""),
-                    "url": a.get("url", "")
-                })
-            except:
-                continue
+            alerts.append({
+                "alert": a.get("alert", ""),
+                "risk": a.get("risk", ""),
+                "url": a.get("url", "")
+            })
 
-        # =========================
-        # FINAL RESULT
-        # =========================
         result = {
             "status": "done",
             "progress": 100,
@@ -120,19 +142,21 @@ def run_scan(scan_id, target):
         }
 
 # =========================
-# HEALTH CHECK
+# API ROUTES
 # =========================
+
 @app.get("/")
 def home():
     return {"status": "running"}
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "zap_connected": check_zap()
+    }
 
-# =========================
-# START SCAN
-# =========================
+# -------------------------
 @app.post("/start-scan")
 def start_scan(target: str):
 
@@ -140,8 +164,7 @@ def start_scan(target: str):
 
     scans[scan_id] = {
         "status": "queued",
-        "progress": 0,
-        "alerts": []
+        "progress": 0
     }
 
     Thread(target=run_scan, args=(scan_id, target), daemon=True).start()
@@ -151,16 +174,12 @@ def start_scan(target: str):
         "data": {"scan_id": scan_id}
     })
 
-# =========================
-# SCAN STATUS
-# =========================
+# -------------------------
 @app.get("/scan-status/{scan_id}")
 def scan_status(scan_id: str):
     return scans.get(scan_id, {"status": "not_found"})
 
-# =========================
-# DOWNLOAD REPORT
-# =========================
+# -------------------------
 @app.get("/download/json")
 def download_json():
 
