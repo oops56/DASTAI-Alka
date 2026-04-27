@@ -41,7 +41,7 @@ app.add_middleware(
 )
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
-ZAP_BASE_URL = "http://localhost:8080"
+ZAP_BASE_URL = "http://localhost:8090"
 ZAP_API_KEY = "changeme"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "tinyllama"
@@ -73,7 +73,7 @@ class ScanRequest(BaseModel):
     target_url: str
     scan_type: str = "full"  # full, passive, active
     zap_api_key: str = "changeme"
-    zap_url: str = "http://localhost:8080"
+    zap_url: str = "http://localhost:8090"
     ollama_url: str = "http://localhost:11434"
 
 class LogAnalysisRequest(BaseModel):
