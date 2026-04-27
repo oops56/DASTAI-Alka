@@ -8,7 +8,7 @@ from datetime import datetime
 
 app = FastAPI()
 
-ZAP = "http://127.0.0.1:8090"
+ZAP = "http://127.0.0.1:8080"
 
 # ---------------- DB ----------------
 conn = sqlite3.connect("scans.db", check_same_thread=False)
