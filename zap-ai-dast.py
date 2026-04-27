@@ -1,241 +1,153 @@
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI
 from pydantic import BaseModel
-import requests
-import sqlite3
-import time
-import uuid
-from datetime import datetime
+import requests, time, uuid, json, csv
+from collections import defaultdict
 
 app = FastAPI()
 
-ZAP = "http://127.0.0.1:8080"
+ZAP = "http://127.0.0.1:8090"
+AI_URL = "http://127.0.0.1:11434/api/generate"  # TinyLlama via Ollama (example)
 
-# ---------------- DB ----------------
-conn = sqlite3.connect("scans.db", check_same_thread=False)
-cur = conn.cursor()
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS scans (
-    id TEXT,
-    target TEXT,
-    status TEXT,
-    progress INTEGER,
-    created TEXT
-)
-""")
-conn.commit()
+scans = {}
 
 # ---------------- REQUEST ----------------
 class ScanRequest(BaseModel):
     target: str
 
-# ---------------- ZAP HELPER ----------------
-def zap_get(endpoint, params=None):
+# ---------------- ZAP ----------------
+def zap_get(path, params=None):
     try:
-        url = f"{ZAP}{endpoint}"
-        r = requests.get(url, params=params, timeout=30)
-        print("➡️", r.url)
-        print("⬅️", r.text)
+        r = requests.get(f"{ZAP}{path}", params=params, timeout=30)
         return r.json()
-    except Exception as e:
-        print("❌ ZAP ERROR:", e)
+    except:
         return {}
 
-# ---------------- WAIT FOR ZAP ----------------
-def wait_for_zap():
-    for _ in range(20):
-        try:
-            r = requests.get(f"{ZAP}/JSON/core/view/version/")
-            if r.status_code == 200:
-                print("✅ ZAP ready")
-                return True
-        except:
-            pass
-        time.sleep(1)
-    return False
+def run_scan(target):
+    zap_get("/JSON/core/action/accessUrl/", {"url": target})
+    time.sleep(2)
 
-# ---------------- NORMALIZE URL ----------------
-def normalize_url(target):
-    if not target.startswith("http"):
-        return "http://" + target
-    return target
-
-# ---------------- SEED TARGET ----------------
-def seed_target(target):
-    print("🌐 Seeding:", target)
-
-    zap_get("/JSON/core/action/accessUrl/", {
-        "url": target,
-        "followRedirects": True
-    })
-
-    for _ in range(10):
-        urls = zap_get("/JSON/core/view/urls/")
-        if urls.get("urls"):
-            print("✅ URLs present")
-            return True
-        time.sleep(1)
-
-    print("❌ No URLs after seeding")
-    return False
-
-# ---------------- TRADITIONAL SPIDER ----------------
-def run_spider(target):
-    print("🕷 Starting spider")
-
-    res = zap_get("/JSON/spider/action/scan/", {
-        "url": target,
-        "recurse": True
-    })
-
-    scan_id = res.get("scan")
-    print("Spider ID:", scan_id)
-
-    if not scan_id:
-        return False
+    spider = zap_get("/JSON/spider/action/scan/", {"url": target}).get("scan")
 
     while True:
-        status = zap_get("/JSON/spider/view/status/", {
-            "scanId": scan_id
-        })
-        progress = int(status.get("status", 0))
-        print("Spider progress:", progress)
+        s = int(zap_get("/JSON/spider/view/status/", {"scanId": spider}).get("status", 0))
+        if s >= 100: break
+        time.sleep(1)
 
-        if progress >= 100:
-            break
-
-        time.sleep(2)
-
-    return True
-
-# ---------------- AJAX SPIDER (for JS apps) ----------------
-def run_ajax_spider(target):
-    print("🧠 Starting AJAX spider")
-
-    zap_get("/JSON/ajaxSpider/action/scan/", {
-        "url": target
-    })
-
-    for _ in range(30):
-        status = zap_get("/JSON/ajaxSpider/view/status/")
-        print("AJAX status:", status)
-
-        if status.get("status") == "stopped":
-            return True
-
-        time.sleep(2)
-
-    return False
-
-# ---------------- ACTIVE SCAN ----------------
-def run_active_scan(target, scan_id):
-    print("⚡ Starting active scan")
-
-    res = zap_get("/JSON/ascan/action/scan/", {
-        "url": target,
-        "recurse": True,
-        "inScopeOnly": False
-    })
-
-    ascan_id = res.get("scan")
-    print("Active scan ID:", ascan_id)
-
-    if not ascan_id:
-        return False
+    ascan = zap_get("/JSON/ascan/action/scan/", {"url": target}).get("scan")
 
     while True:
-        status = zap_get("/JSON/ascan/view/status/", {
-            "scanId": ascan_id
-        })
-
-        progress = int(status.get("status", 0))
-        print("Active progress:", progress)
-
-        cur.execute("UPDATE scans SET progress=?, status=? WHERE id=?",
-                    (50 + progress // 2, "scanning", scan_id))
-        conn.commit()
-
-        if progress >= 100:
-            break
-
+        s = int(zap_get("/JSON/ascan/view/status/", {"scanId": ascan}).get("status", 0))
+        if s >= 100: break
         time.sleep(2)
 
-    return True
+    alerts = zap_get("/JSON/core/view/alerts/").get("alerts", [])
+    return alerts
 
-# ---------------- BACKGROUND JOB ----------------
-def run_scan(scan_id, target):
+# ---------------- AI (TinyLlama) ----------------
+def ask_ai(prompt):
     try:
-        print("🚀 Scan start:", target)
+        r = requests.post(AI_URL, json={
+            "model": "tinyllama",
+            "prompt": prompt,
+            "stream": False
+        })
+        return r.json().get("response", "")
+    except:
+        return "AI not available"
 
-        target = normalize_url(target)
+# ---------------- 1. AUTH ANALYSIS ----------------
+def auth_analysis(alerts):
+    auth_issues = [a for a in alerts if "401" in a.get("description","") or "403" in a.get("description","")]
+    
+    prompt = f"""
+    Analyze authentication failures:
+    {auth_issues}
+    Detect patterns, session expiry issues, repeated failures.
+    """
 
-        if not wait_for_zap():
-            raise Exception("ZAP not ready")
+    ai = ask_ai(prompt)
 
-        # STEP 1: Seed
-        if not seed_target(target):
-            cur.execute("UPDATE scans SET status=? WHERE id=?", ("seed_failed", scan_id))
-            conn.commit()
-            return
+    return {
+        "count": len(auth_issues),
+        "ai_analysis": ai
+    }
 
-        # STEP 2: Spider
-        run_spider(target)
+# ---------------- 2. FALSE POSITIVE REDUCTION ----------------
+def false_positive_analysis(alerts):
+    grouped = defaultdict(list)
 
-        # STEP 3: Check URLs
-        urls = zap_get("/JSON/core/view/urls/")
-        if not urls.get("urls"):
-            print("⚠️ No URLs from spider, trying AJAX spider")
-            run_ajax_spider(target)
+    for a in alerts:
+        key = (a.get("alert"), a.get("risk"))
+        grouped[key].append(a)
 
-        # STEP 4: Check again
-        urls = zap_get("/JSON/core/view/urls/")
-        if not urls.get("urls"):
-            cur.execute("UPDATE scans SET status=? WHERE id=?", ("no_urls", scan_id))
-            conn.commit()
-            return
+    prompt = f"""
+    Group duplicate findings and identify false positives:
+    {alerts}
+    """
 
-        # STEP 5: Active scan
-        if not run_active_scan(target, scan_id):
-            cur.execute("UPDATE scans SET status=? WHERE id=?", ("ascan_failed", scan_id))
-            conn.commit()
-            return
+    ai = ask_ai(prompt)
 
-        # DONE
-        cur.execute("UPDATE scans SET status=?, progress=? WHERE id=?",
-                    ("done", 100, scan_id))
-        conn.commit()
+    return {
+        "groups": len(grouped),
+        "ai_analysis": ai
+    }
 
-        print("✅ Scan complete")
+# ---------------- 3. PRIORITIZATION ----------------
+def prioritize(alerts):
+    prompt = f"""
+    Rank findings by exploitability and impact.
+    Map to OWASP Top 10.
+    {alerts}
+    """
 
-    except Exception as e:
-        print("🔥 ERROR:", e)
-        cur.execute("UPDATE scans SET status=? WHERE id=?", ("crashed", scan_id))
-        conn.commit()
+    ai = ask_ai(prompt)
+
+    return {"ai_prioritization": ai}
+
+# ---------------- 4. SCAN OPTIMIZATION ----------------
+def optimize(alerts):
+    prompt = f"""
+    Suggest scan optimizations, remove low value tests,
+    reduce crawl scope.
+    {alerts}
+    """
+
+    ai = ask_ai(prompt)
+
+    return {"ai_optimization": ai}
+
+# ---------------- EXPORT ----------------
+def export_json(data, filename):
+    with open(filename, "w") as f:
+        json.dump(data, f)
+
+def export_csv(alerts, filename):
+    with open(filename, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["alert", "risk", "url"])
+        for a in alerts:
+            writer.writerow([a.get("alert"), a.get("risk"), a.get("url")])
 
 # ---------------- API ----------------
-@app.post("/start-scan")
-def start_scan(req: ScanRequest, bg: BackgroundTasks):
+@app.post("/scan")
+def scan(req: ScanRequest):
     sid = str(uuid.uuid4())
 
-    cur.execute("INSERT INTO scans VALUES (?,?,?,?,?)",
-                (sid, req.target, "starting", 0, datetime.now().isoformat()))
-    conn.commit()
+    alerts = run_scan(req.target)
 
-    bg.add_task(run_scan, sid, req.target)
+    scans[sid] = {
+        "alerts": alerts,
+        "auth": auth_analysis(alerts),
+        "fp": false_positive_analysis(alerts),
+        "priority": prioritize(alerts),
+        "opt": optimize(alerts)
+    }
+
+    export_json(scans[sid], f"{sid}.json")
+    export_csv(alerts, f"{sid}.csv")
 
     return {"scan_id": sid}
 
-@app.get("/status/{scan_id}")
-def status(scan_id: str):
-    cur.execute("SELECT * FROM scans WHERE id=?", (scan_id,))
-    row = cur.fetchone()
-
-    if not row:
-        return {"error": "not found"}
-
-    return {
-        "id": row[0],
-        "target": row[1],
-        "status": row[2],
-        "progress": row[3]
-    }
+@app.get("/result/{sid}")
+def result(sid: str):
+    return scans.get(sid, {})
