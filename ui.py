@@ -4,65 +4,52 @@ import time
 
 API = "https://dastai-alka-1.onrender.com"
 
-st.title("🔐 ZAP Scanner Dashboard")
+st.title("🔐 AI ZAP Security Platform")
 
 menu = st.sidebar.selectbox("Menu", [
     "Run Scan",
-    "Live Progress"
+    "Live Analysis",
+    "Compare Runs"
 ])
 
 # ---------------- RUN SCAN ----------------
 if menu == "Run Scan":
 
-    target = st.text_input("Target URL (http/https required)")
+    target = st.text_input("Target URL")
 
     if st.button("Start Scan"):
 
-        try:
-            res = requests.post(
-                f"{API}/start-scan",
-                json={"target": target},
-                timeout=30
-            )
+        res = requests.post(
+            f"{API}/start-scan",
+            json={"target": target}
+        )
 
-            data = res.json()
+        st.success(res.json())
 
-            st.success("Scan started")
-            st.json(data)
-
-            st.session_state["scan_id"] = data["scan_id"]
-
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-# ---------------- LIVE STATUS ----------------
-elif menu == "Live Progress":
+# ---------------- LIVE ANALYSIS ----------------
+elif menu == "Live Analysis":
 
     sid = st.text_input("Scan ID")
 
-    if st.button("Track Scan"):
+    if st.button("Fetch Analysis"):
 
-        bar = st.progress(0)
-        box = st.empty()
+        res = requests.get(f"{API}/status/{sid}")
+        data = res.json()
 
-        while True:
+        st.subheader("Authentication Research")
+        st.json(data["auth_analysis"])
 
-            try:
-                res = requests.get(f"{API}/status/{sid}", timeout=10)
-                data = res.json()
+        st.subheader("False Positive Reduction")
+        st.json(data["false_positive"])
 
-                progress = data.get("progress", 0)
-                status = data.get("status", "")
+        st.subheader("Prioritized Findings")
+        st.dataframe(pd.DataFrame(data["prioritized"]))
 
-                bar.progress(progress)
-                box.json(data)
+# ---------------- COMPARE ----------------
+elif menu == "Compare Runs":
 
-                if status in ["done", "spider_failed", "scan_failed"]:
-                    st.success("Scan Finished")
-                    break
+    res = requests.get(f"{API}/compare")
+    df = pd.DataFrame(res.json())
 
-                time.sleep(2)
-
-            except Exception as e:
-                st.error(f"Error: {e}")
-                break
+    st.line_chart(df.set_index("id"))
+    st.dataframe(df)
