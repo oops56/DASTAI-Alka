@@ -41,7 +41,7 @@ app.add_middleware(
 )
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
-ZAP_BASE_URL = "http://localhost:8090"
+ZAP_BASE_URL = "http://localhost:8080"
 ZAP_API_KEY = "changeme"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "tinyllama"
@@ -73,7 +73,7 @@ class ScanRequest(BaseModel):
     target_url: str
     scan_type: str = "full"  # full, passive, active
     zap_api_key: str = "changeme"
-    zap_url: str = "http://localhost:8090"
+    zap_url: str = "http://localhost:8080"
     ollama_url: str = "http://localhost:11434"
 
 class LogAnalysisRequest(BaseModel):
@@ -90,24 +90,20 @@ class PolicyOptRequest(BaseModel):
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 
-def call_ollama(prompt: str, ollama_url: str = None) -> str:
-    """Call TinyLlama via Ollama."""
-    url = (ollama_url or OLLAMA_URL).rstrip("/") + "/api/generate"
+def call_ollama(prompt):
     try:
-        resp = requests.post(url, json={
-            "model": OLLAMA_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.3, "num_predict": 512}
-        }, timeout=60)
-        if resp.status_code == 200:
-            return resp.json().get("response", "").strip()
-        return f"[AI Error: HTTP {resp.status_code}]"
-    except requests.exceptions.ConnectionError:
-        return "[AI Unavailable: Ollama not running - using rule-based fallback]"
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "tinyllama",
+                "prompt": prompt,
+                "stream": False
+            },
+            timeout=30
+        )
+        return response.json().get("response", "")
     except Exception as e:
-        return f"[AI Error: {str(e)}]"
-
+        return f"AI Error: {str(e)}"
 
 def call_zap(endpoint: str, params: dict = None, zap_url: str = None, api_key: str = None):
     """Call OWASP ZAP REST API."""
@@ -212,15 +208,12 @@ def health():
     zap_ok = False
     ollama_ok = False
     try:
-        r = requests.get(
-            f"{ZAP_BASE_URL}/JSON/core/view/version/?apikey={ZAP_API_KEY}",
-            timeout=3
-        )
+        r = requests.get(f"{ZAP_BASE_URL}/JSON/core/view/version/", timeout=3)
         zap_ok = r.status_code == 200
     except:
         pass
     try:
-        r = requests.get("http://localhost:11434/api/tags", timeout=3)
+        r = requests.get(f"{OLLAMA_URL.replace('/api/generate', '')}/api/tags", timeout=3)
         ollama_ok = r.status_code == 200
     except:
         pass
