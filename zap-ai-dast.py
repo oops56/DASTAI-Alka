@@ -1,153 +1,168 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-import requests, time, uuid, json, csv
+import requests
+import time
+import uuid
+import json
 from collections import defaultdict
 
 app = FastAPI()
 
 ZAP = "http://127.0.0.1:8080"
-AI_URL = "http://127.0.0.1:11434/api/generate"  # TinyLlama via Ollama (example)
 
-scans = {}
+# ---------------- STORAGE ----------------
+DB = {}
 
 # ---------------- REQUEST ----------------
 class ScanRequest(BaseModel):
     target: str
 
-# ---------------- ZAP ----------------
-def zap_get(path, params=None):
+# ---------------- SAFE REQUEST ----------------
+def zap(path, params=None):
     try:
-        r = requests.get(f"{ZAP}{path}", params=params, timeout=30)
+        r = requests.get(ZAP + path, params=params, timeout=30)
+        print("➡️", r.url)
+        print("⬅️", r.text)
         return r.json()
-    except:
+    except Exception as e:
+        print("❌ ZAP ERROR:", e)
         return {}
 
-def run_scan(target):
-    zap_get("/JSON/core/action/accessUrl/", {"url": target})
+# ---------------- CHECK ZAP ----------------
+def check_zap():
+    try:
+        r = requests.get(ZAP + "/JSON/core/view/version/", timeout=5)
+        return r.status_code == 200
+    except:
+        return False
+
+# ---------------- SEED TARGET ----------------
+def seed(target):
+    zap("/JSON/core/action/accessUrl/", {"url": target, "followRedirects": True})
     time.sleep(2)
 
-    spider = zap_get("/JSON/spider/action/scan/", {"url": target}).get("scan")
-
-    while True:
-        s = int(zap_get("/JSON/spider/view/status/", {"scanId": spider}).get("status", 0))
-        if s >= 100: break
+    for _ in range(10):
+        urls = zap("/JSON/core/view/urls/")
+        if urls.get("urls"):
+            return True
         time.sleep(1)
 
-    ascan = zap_get("/JSON/ascan/action/scan/", {"url": target}).get("scan")
+    return False
+
+# ---------------- SPIDER ----------------
+def spider(target):
+    r = zap("/JSON/spider/action/scan/", {"url": target})
+    sid = r.get("scan")
+
+    if not sid:
+        return None
 
     while True:
-        s = int(zap_get("/JSON/ascan/view/status/", {"scanId": ascan}).get("status", 0))
-        if s >= 100: break
+        status = zap("/JSON/spider/view/status/", {"scanId": sid})
+        if int(status.get("status", 0)) >= 100:
+            break
         time.sleep(2)
 
-    alerts = zap_get("/JSON/core/view/alerts/").get("alerts", [])
-    return alerts
+    return True
 
-# ---------------- AI (TinyLlama) ----------------
-def ask_ai(prompt):
-    try:
-        r = requests.post(AI_URL, json={
-            "model": "tinyllama",
-            "prompt": prompt,
-            "stream": False
-        })
-        return r.json().get("response", "")
-    except:
-        return "AI not available"
+# ---------------- AJAX SPIDER FALLBACK ----------------
+def ajax_spider(target):
+    zap("/JSON/ajaxSpider/action/scan/", {"url": target})
 
-# ---------------- 1. AUTH ANALYSIS ----------------
-def auth_analysis(alerts):
-    auth_issues = [a for a in alerts if "401" in a.get("description","") or "403" in a.get("description","")]
-    
-    prompt = f"""
-    Analyze authentication failures:
-    {auth_issues}
-    Detect patterns, session expiry issues, repeated failures.
-    """
+    for _ in range(20):
+        s = zap("/JSON/ajaxSpider/view/status/")
+        if s.get("status") == "stopped":
+            return True
+        time.sleep(2)
 
-    ai = ask_ai(prompt)
+    return False
 
-    return {
-        "count": len(auth_issues),
-        "ai_analysis": ai
-    }
+# ---------------- ACTIVE SCAN ----------------
+def active_scan(target):
+    r = zap("/JSON/ascan/action/scan/", {
+        "url": target,
+        "recurse": True,
+        "inScopeOnly": False
+    })
 
-# ---------------- 2. FALSE POSITIVE REDUCTION ----------------
-def false_positive_analysis(alerts):
+    sid = r.get("scan")
+    if not sid:
+        return []
+
+    while True:
+        s = zap("/JSON/ascan/view/status/", {"scanId": sid})
+        if int(s.get("status", 0)) >= 100:
+            break
+        time.sleep(3)
+
+    return True
+
+# ---------------- FINDINGS ----------------
+def get_alerts():
+    return zap("/JSON/core/view/alerts/").get("alerts", [])
+
+# ---------------- AI PLACEHOLDER ----------------
+def ai_process(alerts):
     grouped = defaultdict(list)
 
     for a in alerts:
-        key = (a.get("alert"), a.get("risk"))
-        grouped[key].append(a)
-
-    prompt = f"""
-    Group duplicate findings and identify false positives:
-    {alerts}
-    """
-
-    ai = ask_ai(prompt)
+        grouped[a.get("alert")].append(a)
 
     return {
+        "total": len(alerts),
         "groups": len(grouped),
-        "ai_analysis": ai
+        "note": "AI layer placeholder (TinyLlama can be plugged here)"
     }
 
-# ---------------- 3. PRIORITIZATION ----------------
-def prioritize(alerts):
-    prompt = f"""
-    Rank findings by exploitability and impact.
-    Map to OWASP Top 10.
-    {alerts}
-    """
+# ---------------- FULL SCAN PIPELINE ----------------
+def run_scan(target):
+    print("🚀 Scan started:", target)
 
-    ai = ask_ai(prompt)
+    if not check_zap():
+        return {"error": "ZAP not running"}
 
-    return {"ai_prioritization": ai}
+    if not target.startswith("http"):
+        target = "http://" + target
 
-# ---------------- 4. SCAN OPTIMIZATION ----------------
-def optimize(alerts):
-    prompt = f"""
-    Suggest scan optimizations, remove low value tests,
-    reduce crawl scope.
-    {alerts}
-    """
+    # STEP 1: seed
+    if not seed(target):
+        return {"error": "No URLs discovered"}
 
-    ai = ask_ai(prompt)
+    # STEP 2: spider
+    spider_ok = spider(target)
 
-    return {"ai_optimization": ai}
+    # STEP 3: fallback if needed
+    urls = zap("/JSON/core/view/urls/")
+    if not urls.get("urls"):
+        print("⚠️ Spider failed → running AJAX spider")
+        ajax_spider(target)
 
-# ---------------- EXPORT ----------------
-def export_json(data, filename):
-    with open(filename, "w") as f:
-        json.dump(data, f)
+    # STEP 4: check again
+    urls = zap("/JSON/core/view/urls/")
+    if not urls.get("urls"):
+        return {"error": "Still no URLs after crawling"}
 
-def export_csv(alerts, filename):
-    with open(filename, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["alert", "risk", "url"])
-        for a in alerts:
-            writer.writerow([a.get("alert"), a.get("risk"), a.get("url")])
+    # STEP 5: active scan
+    active_scan(target)
+
+    # STEP 6: results
+    alerts = get_alerts()
+
+    result = {
+        "alerts": alerts,
+        "ai": ai_process(alerts)
+    }
+
+    return result
 
 # ---------------- API ----------------
 @app.post("/scan")
 def scan(req: ScanRequest):
     sid = str(uuid.uuid4())
-
-    alerts = run_scan(req.target)
-
-    scans[sid] = {
-        "alerts": alerts,
-        "auth": auth_analysis(alerts),
-        "fp": false_positive_analysis(alerts),
-        "priority": prioritize(alerts),
-        "opt": optimize(alerts)
-    }
-
-    export_json(scans[sid], f"{sid}.json")
-    export_csv(alerts, f"{sid}.csv")
-
+    result = run_scan(req.target)
+    DB[sid] = result
     return {"scan_id": sid}
 
 @app.get("/result/{sid}")
 def result(sid: str):
-    return scans.get(sid, {})
+    return DB.get(sid, {"error": "not found"})
