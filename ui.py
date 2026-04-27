@@ -3,38 +3,41 @@ import requests
 import time
 
 API_URL = "https://dastai-alka-1.onrender.com/"
+st.title("🔐 AI Security Scan Analyzer")
 
-if "scan_id" not in st.session_state:
-    st.session_state.scan_id = None
+menu = st.sidebar.selectbox(
+    "Choose Feature",
+    ["Auth Analysis", "False Positive", "Prioritize", "Optimize", "Trend"]
+)
 
-target = st.text_input("Target URL")
+file = st.file_uploader("Upload Scan File (CSV/JSON)")
 
-if st.button("Start Scan"):
-    r = requests.post(f"{API_URL}/start-scan", params={"target": target})
-    st.session_state.scan_id = r.json()["scan_id"]
+if file:
+    if st.button("Run Analysis"):
+        
+        endpoint_map = {
+            "Auth Analysis": "/auth-analysis",
+            "False Positive": "/false-positive",
+            "Prioritize": "/prioritize",
+            "Optimize": "/optimize",
+            "Trend": "/trend"
+        }
 
-# =========================
-# LIVE STATUS BOX
-# =========================
-if st.session_state.scan_id:
+        endpoint = endpoint_map[menu]
 
-    scan_id = st.session_state.scan_id
+        response = requests.post(
+            BACKEND_URL + endpoint,
+            files={"file": file}
+        )
 
-    r = requests.get(f"{API_URL}/scan/{scan_id}")
-    data = r.json()
+        if response.status_code == 200:
+            data = response.json()
 
-    status = data.get("status")
-    progress = data.get("progress", 0)
+            st.success("Analysis Complete")
 
-    st.write(f"Status: {status}")
-    st.progress(int(progress))
-
-    # auto refresh
-    if status not in ["done", "error"]:
-        time.sleep(2)
-        st.rerun()
-    else:
-        st.success("Scan finished")
-
-        for a in data.get("alerts", []):
-            st.warning(f"{a.get('risk')} - {a.get('alert')}")
+            if isinstance(data, list):
+                st.dataframe(pd.DataFrame(data))
+            else:
+                st.json(data)
+        else:
+            st.error("Something went wrong")
