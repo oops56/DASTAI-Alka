@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS scans (
 """)
 conn.commit()
 
-ZAP_URL = "http://127.0.0.1:8090"   # FIXED DEFAULT
+ZAP_URL = "http://127.0.0.1:8090"
 
 # ---------------- UTIL ----------------
 def read_file(file):
@@ -37,7 +37,7 @@ def read_file(file):
     except:
         return pd.read_json(io.BytesIO(content))
 
-# ---------------- AI LAYER (stub) ----------------
+# ---------------- AI LAYER ----------------
 def ai_summary(text, task):
     return f"[AI-{task}] Insights: {str(text)[:200]}"
 
@@ -90,42 +90,61 @@ def prioritize(df):
     return df.sort_values(by="score", ascending=False).to_dict(orient="records")
 
 # ---------------- ZAP HELPERS ----------------
-def start_zap(target):
-    res = requests.get(
-        f"{ZAP_URL}/JSON/ascan/action/scan/",
-        params={"url": target}
-    )
+
+def zap_spider(target):
+    res = requests.get(f"{ZAP_URL}/JSON/spider/action/scan/", params={"url": target})
     return res.json().get("scan")
 
-def zap_status(scan_id):
-    res = requests.get(
-        f"{ZAP_URL}/JSON/ascan/view/status/",
-        params={"scanId": scan_id}
-    )
+def zap_spider_status(scan_id):
+    res = requests.get(f"{ZAP_URL}/JSON/spider/view/status/", params={"scanId": scan_id})
+    return int(res.json().get("status", 0))
+
+def start_zap_active(target):
+    res = requests.get(f"{ZAP_URL}/JSON/ascan/action/scan/", params={"url": target})
+    return res.json().get("scan")
+
+def zap_active_status(scan_id):
+    res = requests.get(f"{ZAP_URL}/JSON/ascan/view/status/", params={"scanId": scan_id})
     return int(res.json().get("status", 0))
 
 def zap_alerts():
     res = requests.get(f"{ZAP_URL}/JSON/core/view/alerts/")
     return res.json().get("alerts", [])
 
-# ---------------- BACKGROUND SCAN ----------------
+# ---------------- BACKGROUND SCAN (FIXED FLOW) ----------------
 def run_scan(scan_id, target):
-    zap_id = start_zap(target)
+
     start_time = time.time()
+
+    # STEP 1: SPIDER (CRITICAL FIX)
+    spider_id = zap_spider(target)
+
+    while True:
+        status = zap_spider_status(spider_id)
+        cursor.execute("UPDATE scans SET progress=?, status=? WHERE id=?",
+                       (status//2, "spidering", scan_id))
+        conn.commit()
+
+        if status >= 100:
+            break
+
+        time.sleep(2)
+
+    # STEP 2: ACTIVE SCAN
+    zap_id = start_zap_active(target)
 
     progress = 0
     while progress < 100:
-        progress = zap_status(zap_id)
+        progress = zap_active_status(zap_id)
 
-        cursor.execute("""
-            UPDATE scans SET progress=?, status=? WHERE id=?
-        """, (progress, "running", scan_id))
-
+        cursor.execute("UPDATE scans SET progress=?, status=? WHERE id=?",
+                       (50 + progress//2, "scanning", scan_id))
         conn.commit()
+
         time.sleep(2)
 
+    # STEP 3: COLLECT RESULTS
     alerts = zap_alerts()
-
     df = pd.DataFrame(alerts)
 
     scan_time = int(time.time() - start_time)
@@ -189,10 +208,10 @@ def optimize(scan_id: str):
 
     suggestions = []
 
-    if row[8] > 30:  # info
+    if row[8] > 30:
         suggestions.append("Disable informational checks")
 
-    if row[4] and row[4] > 300:  # scan time
+    if row[4] and row[4] > 300:
         suggestions.append("Reduce crawl depth / scope")
 
     return {
