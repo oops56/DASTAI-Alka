@@ -5,54 +5,34 @@ import time
 API = "https://dastai-alka-1.onrender.com"
 st.title("🔐 ZAP Security Scanner Dashboard")
 
-menu = st.sidebar.selectbox("Menu", ["Run Scan", "Live Status"])
+target = st.text_input("Target URL")
 
-# ---------------- RUN SCAN ----------------
-if menu == "Run Scan":
+if st.button("Start Scan"):
+    res = requests.post(f"{API}/scan", json={"target": target}).json()
+    st.session_state["scan_id"] = res["scan_id"]
 
-    target = st.text_input("Enter Target URL")
+if "scan_id" in st.session_state:
+    sid = st.session_state["scan_id"]
+    data = requests.get(f"{API}/result/{sid}").json()
 
-    if st.button("Start Scan"):
+    st.subheader("Auth Analysis")
+    st.write(data.get("auth"))
 
-        try:
-            res = requests.post(
-                f"{API}/start-scan",
-                json={"target": target}
-            )
+    st.subheader("False Positives")
+    st.write(data.get("fp"))
 
-            st.success("Scan started")
-            st.json(res.json())
+    st.subheader("Prioritization")
+    st.write(data.get("priority"))
 
-        except Exception as e:
-            st.error(str(e))
+    st.subheader("Optimization")
+    st.write(data.get("opt"))
 
-# ---------------- LIVE STATUS ----------------
-elif menu == "Live Status":
+    alerts = data.get("alerts", [])
 
-    sid = st.text_input("Scan ID")
+    if alerts:
+        df = pd.DataFrame(alerts)
+        st.subheader("Findings")
+        st.dataframe(df)
 
-    if st.button("Track"):
-
-        bar = st.progress(0)
-        box = st.empty()
-
-        while True:
-
-            try:
-                res = requests.get(f"{API}/status/{sid}")
-                data = res.json()
-
-                progress = data.get("progress", 0)
-
-                bar.progress(progress)
-                box.json(data)
-
-                if data.get("status") in ["done", "spider_failed", "scan_failed"]:
-                    st.success("Scan finished")
-                    break
-
-                time.sleep(2)
-
-            except Exception as e:
-                st.error(str(e))
-                break
+        st.download_button("Download CSV", df.to_csv(index=False), "report.csv")
+        st.download_button("Download JSON", str(data), "report.json")
