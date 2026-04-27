@@ -148,7 +148,7 @@ section[data-testid="stSidebar"] {
 """, unsafe_allow_html=True)
 
 # ─── Backend Config ─────────────────────────────────────────────────────────────
-BACKEND = "https://dastai-alka-1.onrender.com"
+BACKEND = "http://localhost:8000"
 
 def api(method, path, **kwargs):
     try:
@@ -201,7 +201,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### ⚙️ Scan Settings")
     target_url = st.text_input("Target URL", value="http://testphp.vulnweb.com")
-    zap_url = st.text_input("ZAP URL", value="http://localhost:8090")
+    zap_url = st.text_input("ZAP URL", value="http://localhost:8080")
     zap_key = st.text_input("ZAP API Key", value="changeme", type="password")
     app_type = st.selectbox("App Type", ["web", "api", "spa", "mobile-backend"])
 
