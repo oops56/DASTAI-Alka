@@ -54,121 +54,158 @@ def wait_for_zap():
         time.sleep(1)
     return False
 
-# ---------------- FIX URL ----------------
+# ---------------- NORMALIZE URL ----------------
 def normalize_url(target):
     if not target.startswith("http"):
         return "http://" + target
     return target
 
-# ---------------- FORCE URL INTO ZAP ----------------
+# ---------------- SEED TARGET ----------------
 def seed_target(target):
-    print("🌐 Seeding target:", target)
+    print("🌐 Seeding:", target)
 
     zap_get("/JSON/core/action/accessUrl/", {
         "url": target,
         "followRedirects": True
     })
 
-    # WAIT until URL actually appears
     for _ in range(10):
         urls = zap_get("/JSON/core/view/urls/")
         if urls.get("urls"):
-            print("✅ URLs discovered")
+            print("✅ URLs present")
             return True
         time.sleep(1)
 
-    print("❌ No URLs found after accessUrl")
+    print("❌ No URLs after seeding")
     return False
 
-# ---------------- SPIDER ----------------
-def start_spider(target):
-    res = zap_get("/JSON/spider/action/scan/", {"url": target})
-    return res.get("scan")
+# ---------------- TRADITIONAL SPIDER ----------------
+def run_spider(target):
+    print("🕷 Starting spider")
 
-def spider_progress(scan_id):
-    res = zap_get("/JSON/spider/view/status/", {"scanId": scan_id})
-    return int(res.get("status", 0))
+    res = zap_get("/JSON/spider/action/scan/", {
+        "url": target,
+        "recurse": True
+    })
+
+    scan_id = res.get("scan")
+    print("Spider ID:", scan_id)
+
+    if not scan_id:
+        return False
+
+    while True:
+        status = zap_get("/JSON/spider/view/status/", {
+            "scanId": scan_id
+        })
+        progress = int(status.get("status", 0))
+        print("Spider progress:", progress)
+
+        if progress >= 100:
+            break
+
+        time.sleep(2)
+
+    return True
+
+# ---------------- AJAX SPIDER (for JS apps) ----------------
+def run_ajax_spider(target):
+    print("🧠 Starting AJAX spider")
+
+    zap_get("/JSON/ajaxSpider/action/scan/", {
+        "url": target
+    })
+
+    for _ in range(30):
+        status = zap_get("/JSON/ajaxSpider/view/status/")
+        print("AJAX status:", status)
+
+        if status.get("status") == "stopped":
+            return True
+
+        time.sleep(2)
+
+    return False
 
 # ---------------- ACTIVE SCAN ----------------
-def start_active_scan(target):
+def run_active_scan(target, scan_id):
+    print("⚡ Starting active scan")
+
     res = zap_get("/JSON/ascan/action/scan/", {
         "url": target,
         "recurse": True,
         "inScopeOnly": False
     })
-    return res.get("scan")
 
-def active_progress(scan_id):
-    res = zap_get("/JSON/ascan/view/status/", {"scanId": scan_id})
-    return int(res.get("status", 0))
+    ascan_id = res.get("scan")
+    print("Active scan ID:", ascan_id)
 
-# ---------------- BACKGROUND SCAN ----------------
+    if not ascan_id:
+        return False
+
+    while True:
+        status = zap_get("/JSON/ascan/view/status/", {
+            "scanId": ascan_id
+        })
+
+        progress = int(status.get("status", 0))
+        print("Active progress:", progress)
+
+        cur.execute("UPDATE scans SET progress=?, status=? WHERE id=?",
+                    (50 + progress // 2, "scanning", scan_id))
+        conn.commit()
+
+        if progress >= 100:
+            break
+
+        time.sleep(2)
+
+    return True
+
+# ---------------- BACKGROUND JOB ----------------
 def run_scan(scan_id, target):
     try:
-        print("🚀 Starting scan:", target)
+        print("🚀 Scan start:", target)
 
         target = normalize_url(target)
 
         if not wait_for_zap():
             raise Exception("ZAP not ready")
 
-        # STEP 1: Seed target
+        # STEP 1: Seed
         if not seed_target(target):
-            cur.execute("UPDATE scans SET status=? WHERE id=?", ("no_urls", scan_id))
+            cur.execute("UPDATE scans SET status=? WHERE id=?", ("seed_failed", scan_id))
             conn.commit()
             return
 
         # STEP 2: Spider
-        spider_id = start_spider(target)
-        if not spider_id:
-            cur.execute("UPDATE scans SET status=? WHERE id=?", ("spider_failed", scan_id))
-            conn.commit()
-            return
+        run_spider(target)
 
-        while True:
-            p = spider_progress(spider_id)
-            print("🕷 Spider:", p)
-
-            cur.execute("UPDATE scans SET progress=?, status=? WHERE id=?",
-                        (p // 2, "spidering", scan_id))
-            conn.commit()
-
-            if p >= 100:
-                break
-            time.sleep(2)
-
-        # CHECK URLs AGAIN
+        # STEP 3: Check URLs
         urls = zap_get("/JSON/core/view/urls/")
         if not urls.get("urls"):
-            cur.execute("UPDATE scans SET status=? WHERE id=?", ("no_urls_after_spider", scan_id))
+            print("⚠️ No URLs from spider, trying AJAX spider")
+            run_ajax_spider(target)
+
+        # STEP 4: Check again
+        urls = zap_get("/JSON/core/view/urls/")
+        if not urls.get("urls"):
+            cur.execute("UPDATE scans SET status=? WHERE id=?", ("no_urls", scan_id))
             conn.commit()
             return
 
-        # STEP 3: Active Scan
-        ascan_id = start_active_scan(target)
-        if not ascan_id:
+        # STEP 5: Active scan
+        if not run_active_scan(target, scan_id):
             cur.execute("UPDATE scans SET status=? WHERE id=?", ("ascan_failed", scan_id))
             conn.commit()
             return
-
-        while True:
-            p = active_progress(ascan_id)
-            print("⚡ Active:", p)
-
-            cur.execute("UPDATE scans SET progress=?, status=? WHERE id=?",
-                        (50 + p // 2, "scanning", scan_id))
-            conn.commit()
-
-            if p >= 100:
-                break
-            time.sleep(2)
 
         # DONE
         cur.execute("UPDATE scans SET status=?, progress=? WHERE id=?",
                     ("done", 100, scan_id))
         conn.commit()
 
-        print("✅ Scan finished")
+        print("✅ Scan complete")
 
     except Exception as e:
         print("🔥 ERROR:", e)
@@ -189,7 +226,7 @@ def start_scan(req: ScanRequest, bg: BackgroundTasks):
     return {"scan_id": sid}
 
 @app.get("/status/{scan_id}")
-def get_status(scan_id: str):
+def status(scan_id: str):
     cur.execute("SELECT * FROM scans WHERE id=?", (scan_id,))
     row = cur.fetchone()
 
