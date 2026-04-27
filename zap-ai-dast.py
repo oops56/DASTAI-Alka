@@ -2,17 +2,16 @@ from fastapi import FastAPI, BackgroundTasks
 from pydantic import BaseModel
 import requests
 import sqlite3
-import uuid
 import time
+import uuid
 from datetime import datetime
-import pandas as pd
 
 app = FastAPI()
 
-ZAP_URL = "http://127.0.0.1:8090"
+ZAP = "http://127.0.0.1:8090"
 
 # ---------------- DB ----------------
-conn = sqlite3.connect("scanner.db", check_same_thread=False)
+conn = sqlite3.connect("scans.db", check_same_thread=False)
 cur = conn.cursor()
 
 cur.execute("""
@@ -21,158 +20,134 @@ CREATE TABLE IF NOT EXISTS scans (
     target TEXT,
     status TEXT,
     progress INTEGER,
-    created TEXT,
-    duration INTEGER
+    created TEXT
 )
 """)
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS findings (
-    scan_id TEXT,
-    alert TEXT,
-    risk TEXT,
-    url TEXT
-)
-""")
-
 conn.commit()
 
 # ---------------- REQUEST ----------------
 class ScanRequest(BaseModel):
     target: str
 
-# ---------------- ZAP HELPERS ----------------
-def zap(url, params=None):
+# ---------------- ZAP CORE ----------------
+def zap_get(url, params=None):
     try:
         return requests.get(url, params=params, timeout=20).json()
-    except:
+    except Exception as e:
+        print("ZAP ERROR:", e)
         return {}
 
-def access(target):
-    zap(f"{ZAP_URL}/JSON/core/action/accessUrl/", {"url": target})
-    time.sleep(2)
+# ---------------- REQUIRED STEP (CRITICAL) ----------------
+def access_url(target):
+    zap_get(f"{ZAP}/JSON/core/action/accessUrl/", {
+        "url": target,
+        "followRedirects": True
+    })
+    time.sleep(3)
 
+# ---------------- SPIDER ----------------
 def spider(target):
-    return zap(f"{ZAP_URL}/JSON/spider/action/scan/", {"url": target}).get("scan")
+    return zap_get(f"{ZAP}/JSON/spider/action/scan/", {
+        "url": target
+    }).get("scan")
 
-def spider_status(sid):
-    return int(zap(f"{ZAP_URL}/JSON/spider/view/status/", {"scanId": sid}).get("status", 0))
+def spider_status(scan_id):
+    return int(zap_get(
+        f"{ZAP}/JSON/spider/view/status/",
+        {"scanId": scan_id}
+    ).get("status", 0))
 
-def active(target):
-    return zap(f"{ZAP_URL}/JSON/ascan/action/scan/", {"url": target}).get("scan")
+# ---------------- ACTIVE SCAN ----------------
+def active_scan(target):
+    return zap_get(f"{ZAP}/JSON/ascan/action/scan/", {
+        "url": target,
+        "recurse": True
+    }).get("scan")
 
-def active_status(sid):
-    return int(zap(f"{ZAP_URL}/JSON/ascan/view/status/", {"scanId": sid}).get("status", 0))
+def active_status(scan_id):
+    return int(zap_get(
+        f"{ZAP}/JSON/ascan/view/status/",
+        {"scanId": scan_id}
+    ).get("status", 0))
 
-def alerts():
-    return zap(f"{ZAP_URL}/JSON/core/view/alerts/").get("alerts", [])
-
-# ---------------- AI LAYER (RULE BASED MVP) ----------------
-
-def ai_auth_analysis(df):
-    df["auth_fail"] = df["risk"].isin(["High", "Medium"])
-    return {
-        "auth_failure_count": int(df["auth_fail"].sum()),
-        "repeated_patterns": df["alert"].value_counts().head(3).to_dict()
-    }
-
-def ai_false_positive(df):
-    dup = df.groupby("alert").size().sort_values(ascending=False)
-    return {
-        "duplicates": dup.head(5).to_dict(),
-        "informational": len(df[df["risk"] == "Informational"])
-    }
-
-def ai_prioritization(df):
-    score_map = {"High": 3, "Medium": 2, "Low": 1, "Informational": 0}
-    df["score"] = df["risk"].map(score_map)
-    return df.sort_values("score", ascending=False).head(10).to_dict(orient="records")
-
-def ai_trends(all_scans):
-    return {
-        "avg_duration": sum([s["duration"] for s in all_scans]) / len(all_scans)
-    }
-
-# ---------------- SCAN PIPELINE ----------------
-
+# ---------------- BACKGROUND JOB ----------------
 def run_scan(scan_id, target):
 
-    start = time.time()
+    print("🚀 Scan started:", target)
 
-    access(target)
+    # STEP 1: MUST ACCESS URL
+    access_url(target)
 
-    # SPIDER
-    sid = spider(target)
-    while spider_status(sid) < 100:
+    # STEP 2: SPIDER
+    spider_id = spider(target)
+    if not spider_id:
+        cur.execute("UPDATE scans SET status=? WHERE id=?", ("spider_failed", scan_id))
+        conn.commit()
+        return
+
+    while True:
+        p = spider_status(spider_id)
+        cur.execute("UPDATE scans SET progress=?, status=? WHERE id=?",
+                    (p // 2, "spidering", scan_id))
+        conn.commit()
+
+        if p >= 100:
+            break
+
         time.sleep(2)
 
-    # ACTIVE SCAN
-    aid = active(target)
-    while active_status(aid) < 100:
+    # STEP 3: ACTIVE SCAN
+    scan_id_zap = active_scan(target)
+    if not scan_id_zap:
+        cur.execute("UPDATE scans SET status=? WHERE id=?", ("scan_failed", scan_id))
+        conn.commit()
+        return
+
+    while True:
+        p = active_status(scan_id_zap)
+        cur.execute("UPDATE scans SET progress=?, status=? WHERE id=?",
+                    (50 + p // 2, "scanning", scan_id))
+        conn.commit()
+
+        if p >= 100:
+            break
+
         time.sleep(2)
 
-    # RESULTS
-    data = alerts()
-    df = pd.DataFrame(data)
-
-    for _, row in df.iterrows():
-        cur.execute("""
-            INSERT INTO findings VALUES (?,?,?,?)
-        """, (scan_id, row.get("alert"), row.get("risk"), row.get("url")))
-
-    duration = int(time.time() - start)
-
-    cur.execute("""
-        UPDATE scans SET status=?, progress=?, duration=? WHERE id=?
-    """, ("done", 100, duration, scan_id))
-
+    # STEP 4: DONE
+    cur.execute("UPDATE scans SET status=?, progress=? WHERE id=?",
+                ("done", 100, scan_id))
     conn.commit()
 
-# ---------------- API ----------------
+    print("✅ Scan completed")
 
+# ---------------- API ----------------
 @app.post("/start-scan")
 def start_scan(req: ScanRequest, bg: BackgroundTasks):
 
     sid = str(uuid.uuid4())
 
     cur.execute("""
-        INSERT INTO scans VALUES (?,?,?,?,?,?)
-    """, (sid, req.target, "starting", 0, datetime.now().isoformat(), 0))
+        INSERT INTO scans VALUES (?,?,?, ?,?)
+    """, (sid, req.target, "starting", 0, datetime.now().isoformat()))
     conn.commit()
 
     bg.add_task(run_scan, sid, req.target)
 
     return {"scan_id": sid}
 
-# ---------------- STATUS ----------------
+@app.get("/status/{scan_id}")
+def status(scan_id: str):
 
-@app.get("/status/{sid}")
-def status(sid: str):
+    cur.execute("SELECT * FROM scans WHERE id=?", (scan_id,))
+    row = cur.fetchone()
 
-    cur.execute("SELECT * FROM scans WHERE id=?", (sid,))
-    scan = cur.fetchone()
-
-    cur.execute("SELECT alert, risk, url FROM findings WHERE scan_id=?", (sid,))
-    findings = cur.fetchall()
-
-    df = pd.DataFrame(findings, columns=["alert", "risk", "url"])
+    if not row:
+        return {"error": "not found"}
 
     return {
-        "scan": scan,
-        "auth_analysis": ai_auth_analysis(df) if not df.empty else {},
-        "false_positive": ai_false_positive(df) if not df.empty else {},
-        "prioritized": ai_prioritization(df) if not df.empty else []
+        "id": row[0],
+        "target": row[1],
+        "status": row[2],
+        "progress": row[3]
     }
-
-# ---------------- COMPARE ----------------
-
-@app.get("/compare")
-def compare():
-
-    cur.execute("SELECT * FROM scans")
-    rows = cur.fetchall()
-
-    return [
-        {"id": r[0], "target": r[1], "duration": r[5]}
-        for r in rows
-    ]
