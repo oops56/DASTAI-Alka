@@ -1,7 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks
-import pandas as pd
+from fastapi import FastAPI, BackgroundTasks
 import sqlite3
-import io, time, uuid, requests
+import requests
+import time
+import uuid
 from datetime import datetime
 
 app = FastAPI()
@@ -16,12 +17,7 @@ CREATE TABLE IF NOT EXISTS scans (
     target TEXT,
     status TEXT,
     progress INTEGER,
-    scan_time INTEGER,
     total INTEGER,
-    high INTEGER,
-    medium INTEGER,
-    low INTEGER,
-    info INTEGER,
     created TEXT
 )
 """)
@@ -33,20 +29,24 @@ ZAP_URL = "http://127.0.0.1:8090"
 def zap_get(url, params=None):
     try:
         r = requests.get(url, params=params, timeout=15)
+        print("ZAP RESPONSE:", r.text)
         return r.json()
     except Exception as e:
         print("ZAP ERROR:", e)
         return {}
 
-# ---------------- ZAP CORE FIXED FLOW ----------------
+# ---------------- ZAP INIT CHECK ----------------
+def zap_ping():
+    return zap_get(f"{ZAP_URL}/JSON/core/view/version/")
 
+# ---------------- FORCE SITE CREATION ----------------
 def zap_access(target):
-    # CRITICAL: forces ZAP to create site tree
     zap_get(
         f"{ZAP_URL}/JSON/core/action/accessUrl/",
         {"url": target, "followRedirects": True}
     )
 
+# ---------------- SPIDER ----------------
 def zap_spider(target):
     return zap_get(
         f"{ZAP_URL}/JSON/spider/action/scan/",
@@ -59,12 +59,14 @@ def zap_spider_status(scan_id):
         {"scanId": scan_id}
     ).get("status", 0))
 
+# ---------------- ACTIVE SCAN ----------------
 def zap_active_scan(target):
     return zap_get(
         f"{ZAP_URL}/JSON/ascan/action/scan/",
         {
             "url": target,
-            "recurse": True
+            "recurse": True,
+            "inScopeOnly": False
         }
     ).get("scan")
 
@@ -74,28 +76,34 @@ def zap_active_status(scan_id):
         {"scanId": scan_id}
     ).get("status", 0))
 
-def zap_alerts():
-    return zap_get(f"{ZAP_URL}/JSON/core/view/alerts/").get("alerts", [])
-
 # ---------------- BACKGROUND SCAN ----------------
-
 def run_scan(scan_id, target):
 
-    start_time = time.time()
+    print("🚀 Starting scan:", target)
 
-    # STEP 0: FORCE ACCESS (IMPORTANT FIX)
-    zap_access(target)
-
-    # STEP 1: SPIDER
-    spider_id = zap_spider(target)
-
-    if not spider_id:
-        cursor.execute("UPDATE scans SET status=? WHERE id=?", ("failed-spider-init", scan_id))
+    # STEP 0: VERIFY ZAP
+    if not zap_ping():
+        cursor.execute("UPDATE scans SET status=? WHERE id=?", ("zap-not-running", scan_id))
         conn.commit()
         return
 
+    # STEP 1: FORCE SITE CREATION (CRITICAL FIX)
+    zap_access(target)
+    time.sleep(2)
+
+    # STEP 2: SPIDER
+    spider_id = zap_spider(target)
+
+    if not spider_id:
+        cursor.execute("UPDATE scans SET status=? WHERE id=?", ("spider-failed", scan_id))
+        conn.commit()
+        return
+
+    print("Spider started:", spider_id)
+
     while True:
         status = zap_spider_status(spider_id)
+        print("Spider progress:", status)
 
         cursor.execute(
             "UPDATE scans SET progress=?, status=? WHERE id=?",
@@ -108,16 +116,19 @@ def run_scan(scan_id, target):
 
         time.sleep(2)
 
-    # STEP 2: ACTIVE SCAN
+    # STEP 3: ACTIVE SCAN
     zap_id = zap_active_scan(target)
 
     if not zap_id:
-        cursor.execute("UPDATE scans SET status=? WHERE id=?", ("failed-scan-init", scan_id))
+        cursor.execute("UPDATE scans SET status=? WHERE id=?", ("scan-failed", scan_id))
         conn.commit()
         return
 
+    print("Active scan started:", zap_id)
+
     while True:
         progress = zap_active_status(zap_id)
+        print("Active scan progress:", progress)
 
         cursor.execute(
             "UPDATE scans SET progress=?, status=? WHERE id=?",
@@ -130,58 +141,45 @@ def run_scan(scan_id, target):
 
         time.sleep(2)
 
-    # STEP 3: RESULTS
-    alerts = zap_alerts()
-    df = pd.DataFrame(alerts)
-
-    scan_time = int(time.time() - start_time)
-
-    counts = df["risk"].value_counts().to_dict() if "risk" in df.columns else {}
-
-    cursor.execute("""
-        UPDATE scans SET 
-            status=?, progress=100, scan_time=?, total=?, high=?, medium=?, low=?, info=?
-        WHERE id=?
-    """, (
-        "done",
-        scan_time,
-        len(df),
-        counts.get("High", 0),
-        counts.get("Medium", 0),
-        counts.get("Low", 0),
-        counts.get("Informational", 0),
-        scan_id
-    ))
-
+    # STEP 4: COMPLETE
+    cursor.execute(
+        "UPDATE scans SET status=?, progress=? WHERE id=?",
+        ("done", 100, scan_id)
+    )
     conn.commit()
 
-# ---------------- START SCAN ----------------
+    print("✅ Scan completed")
 
+# ---------------- START SCAN ----------------
 @app.post("/start-scan")
 def start_scan(target: str, bg: BackgroundTasks):
 
     if not target.startswith("http"):
-        return {"error": "Target must include http/https"}
+        return {"error": "URL must include http/https"}
 
-    sid = str(uuid.uuid4())
+    scan_id = str(uuid.uuid4())
 
     cursor.execute("""
-        INSERT INTO scans VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO scans VALUES (?,?,?,?,?,?)
     """, (
-        sid, target, "starting", 0, 0, 0, 0, 0, 0, 0,
+        scan_id,
+        target,
+        "starting",
+        0,
+        0,
         datetime.now().isoformat()
     ))
 
     conn.commit()
 
-    bg.add_task(run_scan, sid, target)
+    bg.add_task(run_scan, scan_id, target)
 
-    return {"scan_id": sid}
+    return {"scan_id": scan_id}
 
 # ---------------- STATUS ----------------
-
 @app.get("/status/{scan_id}")
 def status(scan_id: str):
+
     cursor.execute("SELECT * FROM scans WHERE id=?", (scan_id,))
     row = cursor.fetchone()
 
@@ -192,29 +190,5 @@ def status(scan_id: str):
         "id": row[0],
         "target": row[1],
         "status": row[2],
-        "progress": row[3],
-        "scan_time": row[4],
-        "total": row[5],
-        "high": row[6],
-        "medium": row[7],
-        "low": row[8],
-        "info": row[9]
-    }
-
-# ---------------- ANALYSIS (unchanged simple version) ----------------
-
-def read_file(file):
-    content = file.file.read()
-    try:
-        return pd.read_csv(io.BytesIO(content))
-    except:
-        return pd.read_json(io.BytesIO(content))
-
-@app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
-    df = read_file(file)
-
-    return {
-        "rows": len(df),
-        "columns": list(df.columns)
+        "progress": row[3]
     }
