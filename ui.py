@@ -134,7 +134,7 @@ section[data-testid="stSidebar"] {
 </style>
 """, unsafe_allow_html=True)
 # ─── Backend Config ─────────────────────────────────────────────────────────────
-BACKEND = "https://dastai-alka-1.onrender.com""
+BACKEND = "https://dastai-alka-1.onrender.com"
 
 def api(method, path, **kwargs):
     try:
