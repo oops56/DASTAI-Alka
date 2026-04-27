@@ -18,36 +18,51 @@ if menu == "Run Scan":
 
     if st.button("Start Scan"):
 
-        res = requests.post(f"{API}/start-scan", params={"target": target})
-        data = res.json()
+        try:
+            res = requests.post(
+                f"{API}/start-scan",
+                json={"target": target},
+                timeout=30
+            )
 
-        st.success("Scan started")
-        st.json(data)
+            data = res.json()
 
-        st.session_state["scan_id"] = data["scan_id"]
+            st.success("Scan started")
+            st.json(data)
 
-# ---------------- LIVE ----------------
+            st.session_state["scan_id"] = data["scan_id"]
+
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+# ---------------- LIVE STATUS ----------------
 elif menu == "Live Progress":
 
     sid = st.text_input("Scan ID")
 
-    if st.button("Track"):
+    if st.button("Track Scan"):
 
         bar = st.progress(0)
         box = st.empty()
 
         while True:
 
-            r = requests.get(f"{API}/status/{sid}")
-            data = r.json()
+            try:
+                res = requests.get(f"{API}/status/{sid}", timeout=10)
+                data = res.json()
 
-            progress = data.get("progress", 0)
+                progress = data.get("progress", 0)
+                status = data.get("status", "")
 
-            bar.progress(progress)
-            box.json(data)
+                bar.progress(progress)
+                box.json(data)
 
-            if data.get("status") in ["done", "spider_failed", "active_failed"]:
-                st.success("Finished")
+                if status in ["done", "spider_failed", "scan_failed"]:
+                    st.success("Scan Finished")
+                    break
+
+                time.sleep(2)
+
+            except Exception as e:
+                st.error(f"Error: {e}")
                 break
-
-            time.sleep(2)
