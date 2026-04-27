@@ -186,13 +186,13 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### ⚙️ Scan Settings")
     target_url = st.text_input("Target URL", value="http://testphp.vulnweb.com")
-    zap_url = st.text_input("ZAP URL", value="http://localhost:8080")
+    zap_url = st.text_input("ZAP URL", value="http://localhost:8090")
     zap_key = st.text_input("ZAP API Key", value="changeme", type="password")
     app_type = st.selectbox("App Type", ["web", "api", "spa", "mobile-backend"])
 
     st.markdown("---")
     st.markdown("### 🔧 Quick Start")
-    st.code("# Start ZAP headless\nzap.sh -daemon -port 8080\n\n# Start Ollama + TinyLlama\nollama pull tinyllama\nollama serve\n\n# Start backend\nuvicorn backend:app --port 8000", language="bash")
+    st.code("# Start ZAP headless\nzap.sh -daemon -port 8090\n\n# Start Ollama + TinyLlama\nollama pull tinyllama\nollama serve\n\n# Start backend\nuvicorn backend:app --port 8000", language="bash")
 
     if st.button("🚀 Run New Scan", use_container_width=True, type="primary"):
         with st.spinner("Starting ZAP scan..."):
