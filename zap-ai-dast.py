@@ -1,116 +1,114 @@
-from fastapi import FastAPI
-import requests, uuid, time, os, json, traceback
-from threading import Thread
+from fastapi import FastAPI, UploadFile, File
+import pandas as pd
+import io
+from datetime import datetime
 
 app = FastAPI()
 
-# 🔥 CHANGE THIS to your ZAP endpoint
-ZAP_API_URL = "https://candle-main-flags-total.trycloudflare.com"
-
-scans = {}
-REPORT_DIR = "reports"
-os.makedirs(REPORT_DIR, exist_ok=True)
-
-# =========================
-# SAFE REQUEST TO ZAP
-# =========================
-def zap_get(endpoint, params=None):
-    r = requests.get(f"{ZAP_API_URL}{endpoint}", params=params)
-
-    if "<!DOCTYPE html>" in r.text:
-        raise Exception(
-            "Cloudflare returned HTML instead of ZAP API. "
-            "Tunnel is misrouting requests."
-        )
-    if "error" in spider:
-        raise Exception(f"Spider failed due to tunnel issue: {spider}")
-
-    return r.json()
-
-# =========================
-# SCAN WORKER
-# =========================
-def run_scan(scan_id, target):
-
+# -------------------------------
+# Utility: Read CSV/JSON
+# -------------------------------
+def read_file(file):
+    content = file.file.read()
     try:
-        scans[scan_id] = {"status": "starting", "progress": 0}
+        return pd.read_csv(io.BytesIO(content))
+    except:
+        return pd.read_json(io.BytesIO(content))
 
-        # open target
-        zap_get("/JSON/core/action/accessUrl/", {"url": target})
-        time.sleep(2)
+# -------------------------------
+# 1. AUTH ANALYSIS
+# -------------------------------
+@app.post("/auth-analysis")
+async def auth_analysis(file: UploadFile = File(...)):
+    df = read_file(file)
 
-        # spider
-        scans[scan_id]["status"] = "spidering"
-        spider = zap_get("/JSON/spider/action/scan/", {"url": target})
-        spider_id = spider.get("scan")
+    df['is_auth_fail'] = df['status'].isin([401, 403])
+    
+    # Detect streaks
+    df['fail_group'] = (df['is_auth_fail'] != df['is_auth_fail'].shift()).cumsum()
+    df['fail_streak'] = df.groupby('fail_group')['is_auth_fail'].cumsum()
 
-        if not spider_id:
-            raise Exception(f"Spider failed: {spider}")
+    result = {
+        "total_requests": len(df),
+        "total_auth_failures": int(df['is_auth_fail'].sum()),
+        "max_fail_streak": int(df['fail_streak'].max()),
+        "insight": "Repeated auth failures detected. Session may expire during scan."
+    }
 
-        while True:
-            status = zap_get("/JSON/spider/view/status/", {"scanId": spider_id})
-            progress = int(status.get("status", 0))
-            scans[scan_id]["progress"] = progress
-            if progress >= 100:
-                break
-            time.sleep(2)
+    return result
 
-        # active scan
-        scans[scan_id]["status"] = "scanning"
-        ascan = zap_get("/JSON/ascan/action/scan/", {"url": target})
-        ascan_id = ascan.get("scan")
+# -------------------------------
+# 2. FALSE POSITIVE REDUCTION
+# -------------------------------
+@app.post("/false-positive")
+async def false_positive(file: UploadFile = File(...)):
+    df = read_file(file)
 
-        if not ascan_id:
-            raise Exception(f"Active scan failed: {ascan}")
+    df['group_key'] = df['title'] + "_" + df['endpoint']
+    grouped = df.groupby('group_key').size().reset_index(name='count')
 
-        while True:
-            status = zap_get("/JSON/ascan/view/status/", {"scanId": ascan_id})
-            progress = int(status.get("status", 0))
-            scans[scan_id]["progress"] = progress
-            if progress >= 100:
-                break
-            time.sleep(3)
+    info_findings = df[df['severity'] == "Info"]
 
-        # alerts
-        alerts_data = zap_get("/JSON/core/view/alerts/")
-        alerts = alerts_data.get("alerts", [])
+    return {
+        "total_findings": len(df),
+        "unique_groups": len(grouped),
+        "informational_count": len(info_findings),
+        "reduction_possible": len(df) - len(grouped)
+    }
 
-        result = {
-            "status": "done",
-            "progress": 100,
-            "alerts": alerts
-        }
+# -------------------------------
+# 3. PRIORITIZATION
+# -------------------------------
+@app.post("/prioritize")
+async def prioritize(file: UploadFile = File(...)):
+    df = read_file(file)
 
-        scans[scan_id] = result
+    severity_map = {"Low":1, "Medium":2, "High":3, "Critical":4}
+    df['score'] = df['severity'].map(severity_map)
 
-        with open(f"{REPORT_DIR}/report.json", "w") as f:
-            json.dump(result, f, indent=2)
+    df = df.sort_values(by='score', ascending=False)
 
-    except Exception as e:
-        scans[scan_id] = {
-            "status": "error",
-            "error": str(e),
-            "trace": traceback.format_exc()
-        }
+    return df.head(20).to_dict(orient="records")
 
-# =========================
-# API ROUTES
-# =========================
+# -------------------------------
+# 4. SCAN OPTIMIZATION
+# -------------------------------
+@app.post("/optimize")
+async def optimize(file: UploadFile = File(...)):
+    df = read_file(file)
 
+    suggestions = []
+
+    if len(df[df['severity'] == "Info"]) > 30:
+        suggestions.append("Disable informational checks")
+
+    if 'endpoint' in df.columns:
+        dead_paths = df['endpoint'].nunique()
+        if dead_paths > 50:
+            suggestions.append("Reduce crawl scope (too many endpoints)")
+
+    return {
+        "suggestions": suggestions,
+        "message": "Policy optimization recommendations generated"
+    }
+
+# -------------------------------
+# 5. TREND ANALYSIS
+# -------------------------------
+@app.post("/trend")
+async def trend(file: UploadFile = File(...)):
+    df = read_file(file)
+
+    trend = df.groupby('date').agg({
+        'scan_time': 'mean',
+        'findings': 'sum'
+    }).reset_index()
+
+    return trend.to_dict(orient="records")
+
+# -------------------------------
+# ROOT
+# -------------------------------
 @app.get("/")
-def home():
-    return {"status": "running"}
-
-@app.post("/start-scan")
-def start_scan(target: str):
-    scan_id = str(uuid.uuid4())
-    scans[scan_id] = {"status": "queued", "progress": 0}
-
-    Thread(target=run_scan, args=(scan_id, target), daemon=True).start()
-
-    return {"scan_id": scan_id}
-
-@app.get("/scan/{scan_id}")
-def scan_status(scan_id: str):
-    scans = load_scans()   # ALWAYS reload
-    return scans.get(scan_id, {"status": "not_found", "progress": 0})
+def root():
+    return {"message": "AI Scan Analyzer Backend Running"}
