@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import time
 
-API = "http://127.0.0.1:8000"
+API = "https://dastai-alka-1.onrender.com"
 
 st.title("🔐 ZAP Scanner Dashboard")
 
