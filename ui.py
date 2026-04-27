@@ -148,7 +148,7 @@ section[data-testid="stSidebar"] {
 """, unsafe_allow_html=True)
 
 # ─── Backend Config ─────────────────────────────────────────────────────────────
-BACKEND = "http://localhost:8000"
+BACKEND = "https://dastai-alka-1.onrender.com/"
 
 def api(method, path, **kwargs):
     try:
