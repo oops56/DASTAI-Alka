@@ -1,5 +1,6 @@
 """
-ZAP AI Security Scanner 
+ZAP AI Security Scanner - Streamlit Frontend
+4-module security analysis dashboard powered by OWASP ZAP + TinyLlama
 """
 
 import streamlit as st
@@ -133,7 +134,7 @@ section[data-testid="stSidebar"] {
 </style>
 """, unsafe_allow_html=True)
 # ─── Backend Config ─────────────────────────────────────────────────────────────
-BACKEND = "https://dastai-alka-1.onrender.com"
+BACKEND = "https://dastai-alka-1.onrender.com/"
 
 def api(method, path, **kwargs):
     try:
@@ -186,13 +187,13 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### ⚙️ Scan Settings")
     target_url = st.text_input("Target URL", value="http://testphp.vulnweb.com")
-    zap_url = st.text_input("ZAP URL", value="http://localhost:8090")
+    zap_url = st.text_input("ZAP URL", value="http://localhost:8080")
     zap_key = st.text_input("ZAP API Key", value="changeme", type="password")
     app_type = st.selectbox("App Type", ["web", "api", "spa", "mobile-backend"])
 
     st.markdown("---")
     st.markdown("### 🔧 Quick Start")
-    st.code("# Start ZAP headless\nzap.sh -daemon -port 8090\n\n# Start Ollama + TinyLlama\nollama pull tinyllama\nollama serve\n\n# Start backend\nuvicorn backend:app --port 8000", language="bash")
+    st.code("# Start ZAP headless\nzap.sh -daemon -port 8080\n\n# Start Ollama + TinyLlama\nollama pull tinyllama\nollama serve\n\n# Start backend\nuvicorn backend:app --port 8000", language="bash")
 
     if st.button("🚀 Run New Scan", use_container_width=True, type="primary"):
         with st.spinner("Starting ZAP scan..."):
