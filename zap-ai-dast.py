@@ -29,50 +29,53 @@ conn.commit()
 
 ZAP_URL = "http://127.0.0.1:8090"
 
-# ---------------- UTIL ----------------
-def safe_zap_get(url, params=None):
+# ---------------- SAFE REQUEST ----------------
+def zap_get(url, params=None):
     try:
-        r = requests.get(url, params=params, timeout=10)
+        r = requests.get(url, params=params, timeout=15)
         return r.json()
     except Exception as e:
-        return {"error": str(e)}
+        print("ZAP ERROR:", e)
+        return {}
 
-# ---------------- ZAP HELPERS ----------------
+# ---------------- ZAP CORE FIXED FLOW ----------------
+
+def zap_access(target):
+    # CRITICAL: forces ZAP to create site tree
+    zap_get(
+        f"{ZAP_URL}/JSON/core/action/accessUrl/",
+        {"url": target, "followRedirects": True}
+    )
 
 def zap_spider(target):
-    if not target.startswith("http"):
-        raise ValueError("Target must include http/https")
-
-    res = safe_zap_get(
+    return zap_get(
         f"{ZAP_URL}/JSON/spider/action/scan/",
         {"url": target}
-    )
-    return res.get("scan")
+    ).get("scan")
 
 def zap_spider_status(scan_id):
-    res = safe_zap_get(
+    return int(zap_get(
         f"{ZAP_URL}/JSON/spider/view/status/",
         {"scanId": scan_id}
-    )
-    return int(res.get("status", 0))
+    ).get("status", 0))
 
 def zap_active_scan(target):
-    res = safe_zap_get(
+    return zap_get(
         f"{ZAP_URL}/JSON/ascan/action/scan/",
-        {"url": target}
-    )
-    return res.get("scan")
+        {
+            "url": target,
+            "recurse": True
+        }
+    ).get("scan")
 
 def zap_active_status(scan_id):
-    res = safe_zap_get(
+    return int(zap_get(
         f"{ZAP_URL}/JSON/ascan/view/status/",
         {"scanId": scan_id}
-    )
-    return int(res.get("status", 0))
+    ).get("status", 0))
 
 def zap_alerts():
-    res = safe_zap_get(f"{ZAP_URL}/JSON/core/view/alerts/")
-    return res.get("alerts", [])
+    return zap_get(f"{ZAP_URL}/JSON/core/view/alerts/").get("alerts", [])
 
 # ---------------- BACKGROUND SCAN ----------------
 
@@ -80,19 +83,24 @@ def run_scan(scan_id, target):
 
     start_time = time.time()
 
+    # STEP 0: FORCE ACCESS (IMPORTANT FIX)
+    zap_access(target)
+
     # STEP 1: SPIDER
     spider_id = zap_spider(target)
 
-    if spider_id is None:
-        cursor.execute("UPDATE scans SET status=? WHERE id=?", ("failed-spider", scan_id))
+    if not spider_id:
+        cursor.execute("UPDATE scans SET status=? WHERE id=?", ("failed-spider-init", scan_id))
         conn.commit()
         return
 
     while True:
         status = zap_spider_status(spider_id)
 
-        cursor.execute("UPDATE scans SET progress=?, status=? WHERE id=?",
-                       (status // 2, "spidering", scan_id))
+        cursor.execute(
+            "UPDATE scans SET progress=?, status=? WHERE id=?",
+            (status // 2, "spidering", scan_id)
+        )
         conn.commit()
 
         if status >= 100:
@@ -103,16 +111,18 @@ def run_scan(scan_id, target):
     # STEP 2: ACTIVE SCAN
     zap_id = zap_active_scan(target)
 
-    if zap_id is None:
-        cursor.execute("UPDATE scans SET status=? WHERE id=?", ("failed-scan", scan_id))
+    if not zap_id:
+        cursor.execute("UPDATE scans SET status=? WHERE id=?", ("failed-scan-init", scan_id))
         conn.commit()
         return
 
     while True:
         progress = zap_active_status(zap_id)
 
-        cursor.execute("UPDATE scans SET progress=?, status=? WHERE id=?",
-                       (50 + progress // 2, "scanning", scan_id))
+        cursor.execute(
+            "UPDATE scans SET progress=?, status=? WHERE id=?",
+            (50 + progress // 2, "scanning", scan_id)
+        )
         conn.commit()
 
         if progress >= 100:
@@ -150,6 +160,9 @@ def run_scan(scan_id, target):
 @app.post("/start-scan")
 def start_scan(target: str, bg: BackgroundTasks):
 
+    if not target.startswith("http"):
+        return {"error": "Target must include http/https"}
+
     sid = str(uuid.uuid4())
 
     cursor.execute("""
@@ -180,6 +193,7 @@ def status(scan_id: str):
         "target": row[1],
         "status": row[2],
         "progress": row[3],
+        "scan_time": row[4],
         "total": row[5],
         "high": row[6],
         "medium": row[7],
@@ -187,7 +201,7 @@ def status(scan_id: str):
         "info": row[9]
     }
 
-# ---------------- ANALYZE FILE (unchanged) ----------------
+# ---------------- ANALYSIS (unchanged simple version) ----------------
 
 def read_file(file):
     content = file.file.read()
@@ -196,25 +210,11 @@ def read_file(file):
     except:
         return pd.read_json(io.BytesIO(content))
 
-def ai_summary(text, task):
-    return f"[AI-{task}] Insights: {str(text)[:200]}"
-
-def auth_analysis(df):
-    df['auth_fail'] = df['status'].isin([401, 403])
-    return {"failures": int(df['auth_fail'].sum())}
-
-def false_positive(df):
-    return {"total": len(df)}
-
-def prioritize(df):
-    return df.to_dict(orient="records")
-
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     df = read_file(file)
 
     return {
-        "auth": auth_analysis(df),
-        "false_positive": false_positive(df),
-        "prioritized": prioritize(df)[:10]
+        "rows": len(df),
+        "columns": list(df.columns)
     }
