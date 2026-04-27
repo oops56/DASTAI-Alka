@@ -5,7 +5,7 @@ from collections import defaultdict
 
 app = FastAPI()
 
-ZAP = "http://127.0.0.1:8090"
+ZAP = "http://127.0.0.1:8080"
 AI_URL = "http://127.0.0.1:11434/api/generate"  # TinyLlama via Ollama (example)
 
 scans = {}
