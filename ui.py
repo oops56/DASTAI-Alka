@@ -3,7 +3,7 @@ import requests
 import time
 import pandas as pd
 
-API_URL = "https://dastai-alka-1.onrender.com/"
+BACKEND = "https://dastai-alka-1.onrender.com/"
 st.title("🔐 AI ZAP Scanner Dashboard")
 
 menu = st.sidebar.selectbox(
