@@ -1,6 +1,5 @@
 """
-ZAP AI Security Scanner - Streamlit Frontend
-4-module security analysis dashboard powered by OWASP ZAP + TinyLlama
+ZAP AI Security Scanner 
 """
 
 import streamlit as st
