@@ -1,8 +1,9 @@
 from fastapi import FastAPI, BackgroundTasks
+from pydantic import BaseModel
 import requests
 import sqlite3
-import uuid
 import time
+import uuid
 from datetime import datetime
 
 app = FastAPI()
@@ -24,8 +25,12 @@ CREATE TABLE IF NOT EXISTS scans (
 """)
 conn.commit()
 
+# ---------------- REQUEST MODEL ----------------
+class ScanRequest(BaseModel):
+    target: str
+
 # ---------------- SAFE CALL ----------------
-def zap(url, params=None):
+def zap_get(url, params=None):
     try:
         r = requests.get(url, params=params, timeout=20)
         return r.json()
@@ -33,47 +38,51 @@ def zap(url, params=None):
         print("ZAP ERROR:", e)
         return {}
 
-# ---------------- STEP 1: ACCESS URL (CRITICAL) ----------------
+# ---------------- CRITICAL STEP: ACCESS URL ----------------
 def access_url(target):
-    zap(f"{ZAP_URL}/JSON/core/action/accessUrl/", {
-        "url": target,
-        "followRedirects": True
-    })
+    zap_get(
+        f"{ZAP_URL}/JSON/core/action/accessUrl/",
+        {"url": target, "followRedirects": True}
+    )
+    time.sleep(3)  # IMPORTANT
 
-# ---------------- STEP 2: SPIDER ----------------
+# ---------------- SPIDER ----------------
 def spider(target):
-    return zap(f"{ZAP_URL}/JSON/spider/action/scan/", {"url": target}).get("scan")
+    return zap_get(
+        f"{ZAP_URL}/JSON/spider/action/scan/",
+        {"url": target}
+    ).get("scan")
 
 def spider_status(scan_id):
-    return int(zap(
+    return int(zap_get(
         f"{ZAP_URL}/JSON/spider/view/status/",
         {"scanId": scan_id}
     ).get("status", 0))
 
-# ---------------- STEP 3: ACTIVE SCAN ----------------
+# ---------------- ACTIVE SCAN ----------------
 def active_scan(target):
-    return zap(
+    return zap_get(
         f"{ZAP_URL}/JSON/ascan/action/scan/",
-        {"url": target, "recurse": True}
+        {"url": target}
     ).get("scan")
 
 def active_status(scan_id):
-    return int(zap(
+    return int(zap_get(
         f"{ZAP_URL}/JSON/ascan/view/status/",
         {"scanId": scan_id}
     ).get("status", 0))
 
 # ---------------- BACKGROUND PIPELINE ----------------
-def run(scan_id, target):
+def run_scan(scan_id, target):
 
     print("🚀 Starting scan:", target)
 
-    # STEP 0: MUST ACCESS
+    # STEP 1: ACCESS (CRITICAL)
     access_url(target)
-    time.sleep(2)
 
-    # STEP 1: SPIDER
+    # STEP 2: SPIDER
     spider_id = spider(target)
+
     if not spider_id:
         cur.execute("UPDATE scans SET status=? WHERE id=?", ("spider_failed", scan_id))
         conn.commit()
@@ -81,6 +90,7 @@ def run(scan_id, target):
 
     while True:
         p = spider_status(spider_id)
+
         cur.execute("UPDATE scans SET progress=?, status=? WHERE id=?",
                     (p // 2, "spidering", scan_id))
         conn.commit()
@@ -90,10 +100,11 @@ def run(scan_id, target):
 
         time.sleep(2)
 
-    # STEP 2: ACTIVE SCAN
+    # STEP 3: ACTIVE SCAN
     scan_id_zap = active_scan(target)
+
     if not scan_id_zap:
-        cur.execute("UPDATE scans SET status=? WHERE id=?", ("active_failed", scan_id))
+        cur.execute("UPDATE scans SET status=? WHERE id=?", ("scan_failed", scan_id))
         conn.commit()
         return
 
@@ -109,29 +120,26 @@ def run(scan_id, target):
 
         time.sleep(2)
 
-    # STEP 3: DONE
+    # STEP 4: DONE
     cur.execute("UPDATE scans SET status=?, progress=? WHERE id=?",
                 ("done", 100, scan_id))
     conn.commit()
 
-    print("✅ Scan complete")
-
-# ---------------- START SCAN ----------------
+# ---------------- API ----------------
 @app.post("/start-scan")
-def start_scan(target: str, bg: BackgroundTasks):
+def start_scan(req: ScanRequest, bg: BackgroundTasks):
 
     sid = str(uuid.uuid4())
 
     cur.execute("""
         INSERT INTO scans VALUES (?,?,?, ?,?)
-    """, (sid, target, "starting", 0, datetime.now().isoformat()))
+    """, (sid, req.target, "starting", 0, datetime.now().isoformat()))
     conn.commit()
 
-    bg.add_task(run, sid, target)
+    bg.add_task(run_scan, sid, req.target)
 
     return {"scan_id": sid}
 
-# ---------------- STATUS ----------------
 @app.get("/status/{scan_id}")
 def status(scan_id: str):
 
