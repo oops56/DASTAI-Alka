@@ -212,12 +212,15 @@ def health():
     zap_ok = False
     ollama_ok = False
     try:
-        r = requests.get(f"{ZAP_BASE_URL}/JSON/core/view/version/", timeout=3)
+        r = requests.get(
+            f"{ZAP_BASE_URL}/JSON/core/view/version/?apikey={ZAP_API_KEY}",
+            timeout=3
+        )
         zap_ok = r.status_code == 200
     except:
         pass
     try:
-        r = requests.get(f"{OLLAMA_URL.replace('/api/generate', '')}/api/tags", timeout=3)
+        r = requests.get("http://localhost:11434/api/tags", timeout=3)
         ollama_ok = r.status_code == 200
     except:
         pass
