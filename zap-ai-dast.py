@@ -41,7 +41,7 @@ app.add_middleware(
 )
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
-ZAP_BASE_URL = "https://explanation-donor-seen-eos.trycloudflare.com"
+ZAP_BASE_URL = "https://queue-florist-dealer-zoloft.trycloudflare.com"
 ZAP_API_KEY = "changeme"
 OLLAMA_URL = "https://cult-canberra-ranking-antenna.trycloudflare.com"
 OLLAMA_MODEL = "tinyllama"
