@@ -43,7 +43,7 @@ app.add_middleware(
 # ─── Configuration ─────────────────────────────────────────────────────────────
 ZAP_BASE_URL = "https://queue-florist-dealer-zoloft.trycloudflare.com"
 ZAP_API_KEY = "changeme"
-OLLAMA_URL = "https://cult-canberra-ranking-antenna.trycloudflare.com"
+OLLAMA_URL = "https://crops-construction-rail-headquarters.trycloudflare.com"
 OLLAMA_MODEL = "tinyllama"
 
 OWASP_TOP10_MAP = {
@@ -74,7 +74,7 @@ class ScanRequest(BaseModel):
     scan_type: str = "full"  # full, passive, active
     zap_api_key: str = "changeme"
     zap_url: str = "https://explanation-donor-seen-eos.trycloudflare.com"
-    ollama_url: str = "http://localhost:11434"
+    ollama_url: str = "https://crops-construction-rail-headquarters.trycloudflare.com"
 
 class LogAnalysisRequest(BaseModel):
     logs: str
