@@ -92,26 +92,35 @@ class PolicyOptRequest(BaseModel):
 
 def call_ollama(prompt):
     try:
-        response = requests.post(
-            "https://cult-canberra-ranking-antenna.trycloudflare.com",
-            json={
-                "model": "tinyllama",
-                "prompt": prompt,
-                "stream": False
-            },
-            timeout=30
-        )
-        return response.json().get("response", "")
+        resp = requests.post(
+    url,
+    json={
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": 0.3, "num_predict": 512}
+    },
+    timeout=60,
+    headers={
+        "ngrok-skip-browser-warning": "true",
+        "User-Agent": "Mozilla/5.0"
+    }
+)
     except Exception as e:
         return f"AI Error: {str(e)}"
 
 def call_zap(endpoint: str, params: dict = None, zap_url: str = None, api_key: str = None):
-    """Call OWASP ZAP REST API."""
     base = (zap_url or ZAP_BASE_URL).rstrip("/")
     p = params or {}
     p["apikey"] = api_key or ZAP_API_KEY
     try:
-        resp = requests.get(f"{base}{endpoint}", params=p, timeout=30)
+        resp = requests.get(
+            f"{base}{endpoint}",
+            params=p,
+            timeout=30,
+            headers={"ngrok-skip-browser-warning": "true"
+                     "User-Agent": "Mozilla/5.0"}  # ← required
+        )
         return resp.json()
     except Exception as e:
         return {"error": str(e)}
