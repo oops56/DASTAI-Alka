@@ -41,9 +41,9 @@ app.add_middleware(
 )
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
-ZAP_BASE_URL = "https://queue-florist-dealer-zoloft.trycloudflare.com"
+ZAP_BASE_URL = "https://equivocal-scariness-rental.ngrok-free.dev"
 ZAP_API_KEY = "changeme"
-OLLAMA_URL = "https://crops-construction-rail-headquarters.trycloudflare.com"
+OLLAMA_URL = "https://equivocal-scariness-rental.ngrok-free.dev/api/generate"
 OLLAMA_MODEL = "tinyllama"
 
 OWASP_TOP10_MAP = {
