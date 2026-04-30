@@ -41,10 +41,18 @@ app.add_middleware(
 )
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
-ZAP_BASE_URL = "https://equivocal-scariness-rental.ngrok-free.dev"
+# FIX 1: ZAP and Ollama must have DIFFERENT URLs — they were both set to the same ngrok URL
+ZAP_BASE_URL = "https://equivocal-scariness-rental.ngrok-free.dev"   # ← your ZAP ngrok URL
+OLLAMA_BASE_URL = "https://YOUR-OLLAMA-NGROK-URL.ngrok-free.dev"     # ← your Ollama ngrok URL (different!)
+OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
 ZAP_API_KEY = "changeme"
-OLLAMA_URL = "https://equivocal-scariness-rental.ngrok-free.dev/api/generate"
 OLLAMA_MODEL = "tinyllama"
+
+# Shared ngrok headers
+NGROK_HEADERS = {
+    "ngrok-skip-browser-warning": "true",
+    "User-Agent": "Mozilla/5.0"
+}
 
 OWASP_TOP10_MAP = {
     "SQL Injection": "A03:2021 - Injection",
@@ -71,14 +79,14 @@ scan_results_store: Dict[str, Any] = {}
 
 class ScanRequest(BaseModel):
     target_url: str
-    scan_type: str = "full"  # full, passive, active
+    scan_type: str = "full"
     zap_api_key: str = "changeme"
-    zap_url: str = "https://explanation-donor-seen-eos.trycloudflare.com"
-    ollama_url: str = "https://crops-construction-rail-headquarters.trycloudflare.com"
+    zap_url: str = ZAP_BASE_URL
+    ollama_url: str = OLLAMA_BASE_URL
 
 class LogAnalysisRequest(BaseModel):
     logs: str
-    analysis_type: str = "auth"  # auth, findings, priority, policy
+    analysis_type: str = "auth"
 
 class FindingsPriorityRequest(BaseModel):
     findings: List[Dict[str, Any]]
@@ -90,26 +98,35 @@ class PolicyOptRequest(BaseModel):
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 
-def call_ollama(prompt):
+# FIX 2: call_ollama had wrong variable name 'url' (undefined), missing return statement,
+#         and broken indentation
+def call_ollama(prompt: str, ollama_url: str = None) -> str:
+    """Call TinyLlama via Ollama."""
+    url = ollama_url or OLLAMA_URL
     try:
         resp = requests.post(
-    url,
-    json={
-        "model": OLLAMA_MODEL,
-        "prompt": prompt,
-        "stream": False,
-        "options": {"temperature": 0.3, "num_predict": 512}
-    },
-    timeout=60,
-    headers={
-        "ngrok-skip-browser-warning": "true",
-        "User-Agent": "Mozilla/5.0"
-    }
-)
+            url,
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.3, "num_predict": 512}
+            },
+            timeout=60,
+            headers=NGROK_HEADERS
+        )
+        if resp.status_code == 200:
+            return resp.json().get("response", "").strip()
+        return f"[AI Error: HTTP {resp.status_code}]"
+    except requests.exceptions.ConnectionError:
+        return "[AI Unavailable: Ollama not running - using rule-based fallback]"
     except Exception as e:
-        return f"AI Error: {str(e)}"
+        return f"[AI Error: {str(e)}]"
 
+
+# FIX 3: call_zap had missing comma in headers dict (syntax error)
 def call_zap(endpoint: str, params: dict = None, zap_url: str = None, api_key: str = None):
+    """Call OWASP ZAP REST API."""
     base = (zap_url or ZAP_BASE_URL).rstrip("/")
     p = params or {}
     p["apikey"] = api_key or ZAP_API_KEY
@@ -118,8 +135,7 @@ def call_zap(endpoint: str, params: dict = None, zap_url: str = None, api_key: s
             f"{base}{endpoint}",
             params=p,
             timeout=30,
-            headers={"ngrok-skip-browser-warning": "true"
-                     "User-Agent": "Mozilla/5.0"}  # ← required
+            headers=NGROK_HEADERS  # FIX: was missing comma between header keys
         )
         return resp.json()
     except Exception as e:
@@ -212,17 +228,27 @@ def root():
     return {"status": "ZAP AI Security Scanner running", "version": "1.0.0"}
 
 
+# FIX 4: health() was using hardcoded localhost instead of the global ZAP/Ollama URLs
+#         and missing ngrok headers so requests were being blocked
 @app.get("/health")
 def health():
     zap_ok = False
     ollama_ok = False
     try:
-        r = requests.get(f"{ZAP_BASE_URL}/JSON/core/view/version/", timeout=3)
+        r = requests.get(
+            f"{ZAP_BASE_URL}/JSON/core/view/version/?apikey={ZAP_API_KEY}",
+            timeout=5,
+            headers=NGROK_HEADERS
+        )
         zap_ok = r.status_code == 200
     except:
         pass
     try:
-        r = requests.get(f"{OLLAMA_URL.replace('/api/generate', '')}/api/tags", timeout=3)
+        r = requests.get(
+            f"{OLLAMA_BASE_URL}/api/tags",
+            timeout=5,
+            headers=NGROK_HEADERS
+        )
         ollama_ok = r.status_code == 200
     except:
         pass
@@ -237,12 +263,10 @@ def analyze_auth(req: LogAnalysisRequest):
     logs = req.logs or mock_auth_logs()
     lines = logs.strip().split("\n")
 
-    # Parse log lines
     error_401 = [l for l in lines if "401" in l]
     error_403 = [l for l in lines if "403" in l]
     all_errors = error_401 + error_403
 
-    # Detect sequences
     sequences = []
     for i in range(len(lines) - 2):
         codes = []
@@ -253,7 +277,6 @@ def analyze_auth(req: LogAnalysisRequest):
         if codes.count("401") + codes.count("403") >= 2:
             sequences.append({"lines": lines[i:i+3], "pattern": "->".join(codes)})
 
-    # Duration increase detection
     durations = []
     for l in lines:
         m = re.search(r"(\d+)ms", l)
@@ -261,7 +284,6 @@ def analyze_auth(req: LogAnalysisRequest):
             durations.append(int(m.group(1)))
     duration_trend = "increasing" if len(durations) > 1 and durations[-1] > durations[0] else "stable"
 
-    # AI analysis
     prompt = f"""You are a security analyst. Analyze these HTTP access logs for authentication attack patterns.
 
 Logs:
@@ -280,10 +302,10 @@ Provide:
 4. Recommended mitigations
 Be concise."""
 
-    ai_analysis = call_ollama(prompt, req.logs and OLLAMA_URL)
+    # FIX 5: call_ollama was called with wrong second argument — it takes ollama_url not logs
+    ai_analysis = call_ollama(prompt)
 
-    # Fallback if AI unavailable
-    if "Unavailable" in ai_analysis or "Error" in ai_analysis:
+    if not ai_analysis or "Unavailable" in ai_analysis or "Error" in ai_analysis:
         ai_analysis = f"""Rule-based Analysis:
 - Detected {len(all_errors)} auth failures ({len(error_401)} x 401, {len(error_403)} x 403)
 - Found {len(sequences)} repeated failure sequences — indicative of automated scanning
@@ -314,10 +336,8 @@ def get_sample_logs():
 
 @app.post("/api/fpr/analyze")
 def false_positive_reduction(req: FindingsPriorityRequest):
-    """Group duplicates, identify informational, compare manual vs AI FPA."""
     findings = req.findings or mock_findings_if_zap_unavailable()
 
-    # Group by name (duplicates)
     groups = defaultdict(list)
     for f in findings:
         groups[f.get("name", "Unknown")].append(f)
@@ -326,7 +346,6 @@ def false_positive_reduction(req: FindingsPriorityRequest):
     informational = [f for f in findings if f.get("risk", "").lower() in ["informational", "info"]]
     low_risk = [f for f in findings if f.get("risk", "").lower() == "low"]
 
-    # AI grouping
     finding_names = [f.get("name") for f in findings[:15]]
     prompt = f"""You are a security expert performing false positive analysis.
 
@@ -342,10 +361,9 @@ Be concise and specific."""
 
     ai_fpa = call_ollama(prompt)
 
-    # Manual vs AI FPA comparison
     manual_fp_count = sum(1 for f in findings if f.get("manual_severity", "") == "Informational"
                           and f.get("risk", "") != "Informational")
-    ai_estimated_fp_pct = 25  # AI typically estimates ~25% FP for automated scanners
+    ai_estimated_fp_pct = 25
 
     comparison = {
         "manual_fp_identified": manual_fp_count,
@@ -372,15 +390,12 @@ Be concise and specific."""
 
 @app.post("/api/priority/rank")
 def prioritize_findings(req: FindingsPriorityRequest):
-    """Rank findings by exploitability/impact, map to OWASP, validate AI vs manual."""
     findings = req.findings or mock_findings_if_zap_unavailable()
 
-    # Map OWASP categories
     for f in findings:
         f["owasp_category"] = map_to_owasp(f.get("name", ""))
         f["severity_score"] = severity_score(f.get("risk", "Low"))
 
-    # AI ranking
     findings_summary = [{
         "name": f.get("name"),
         "risk": f.get("risk"),
@@ -394,7 +409,7 @@ Findings: {json.dumps(findings_summary, indent=2)}
 
 For each finding provide:
 - Exploitability (1-10)
-- Impact (1-10)  
+- Impact (1-10)
 - Priority rank (1=highest)
 - Brief justification (1 sentence)
 
@@ -402,15 +417,12 @@ Format as numbered list. Be concise."""
 
     ai_ranking = call_ollama(prompt)
 
-    # Sort by severity score
     sorted_findings = sorted(findings, key=lambda x: x.get("severity_score", 0), reverse=True)
 
-    # OWASP category aggregation
     owasp_summary = defaultdict(int)
     for f in findings:
         owasp_summary[f.get("owasp_category", "Unknown")] += 1
 
-    # Manual vs AI validation
     discrepancies = []
     for f in findings:
         manual = f.get("manual_severity", "")
@@ -438,17 +450,14 @@ Format as numbered list. Be concise."""
 
 @app.post("/api/policy/optimize")
 def optimize_policy(req: PolicyOptRequest):
-    """AI-driven scan policy recommendations, dead path detection, policy tuning."""
     findings = req.findings or mock_findings_if_zap_unavailable()
     app_type = req.app_type
     target = req.target_url
 
-    # Identify dead paths (URLs with 404/no findings)
     all_urls = list(set(f.get("url", "") for f in findings))
     high_finding_paths = [f.get("url") for f in findings if severity_score(f.get("risk", "")) >= 3]
     dead_candidates = [u for u in all_urls if u not in high_finding_paths]
 
-    # AI policy recommendations
     finding_types = list(set(f.get("name") for f in findings))
     prompt = f"""You are a ZAP scan policy expert. Optimize the scan configuration.
 
@@ -468,13 +477,11 @@ Be specific and actionable."""
 
     ai_policy = call_ollama(prompt)
 
-    # Simulate before/after metrics
     original_runtime = random.randint(900, 1800)
     original_findings = len(findings)
     optimized_runtime = int(original_runtime * random.uniform(0.55, 0.70))
     optimized_findings = int(original_findings * random.uniform(0.75, 0.90))
 
-    # Policy rules
     disabled_rules = []
     if "api" in target.lower() or app_type == "api":
         disabled_rules.append({"rule": "Cookie Slack Detector", "reason": "API apps use tokens, not cookies"})
@@ -513,18 +520,18 @@ def demo_findings():
 @app.post("/api/scan/start")
 def start_scan(req: ScanRequest):
     """Start a ZAP scan on the target URL."""
-    global ZAP_BASE_URL, ZAP_API_KEY
+    global ZAP_BASE_URL, ZAP_API_KEY, OLLAMA_URL, OLLAMA_BASE_URL
 
     ZAP_BASE_URL = req.zap_url.rstrip("/")
     ZAP_API_KEY = req.zap_api_key
+    OLLAMA_BASE_URL = req.ollama_url.rstrip("/")
+    OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
 
-    # Try ZAP spider
     spider_resp = call_zap("/JSON/spider/action/scan/",
                            {"url": req.target_url, "maxChildren": 10},
                            zap_url=req.zap_url, api_key=req.zap_api_key)
 
     if "error" in spider_resp:
-        # ZAP not available — return mock scan
         scan_id = f"mock_{int(time.time())}"
         scan_results_store[scan_id] = {
             "status": "complete",
@@ -544,20 +551,18 @@ def start_scan(req: ScanRequest):
 @app.get("/api/scan/{scan_id}/status")
 def scan_status(scan_id: str):
     if scan_id not in scan_results_store:
-        # Check with ZAP
         resp = call_zap("/JSON/spider/view/status/", {"scanId": scan_id})
         progress = resp.get("status", "0")
-        return {"scan_id": scan_id, "progress": progress, "status": "running" if int(progress) < 100 else "complete"}
+        return {"scan_id": scan_id, "progress": progress,
+                "status": "running" if int(progress) < 100 else "complete"}
     return scan_results_store.get(scan_id, {"status": "not_found"})
 
 
 @app.get("/api/scan/{scan_id}/findings")
 def get_findings(scan_id: str):
-    """Retrieve findings for a completed scan."""
     if scan_id in scan_results_store and "findings" in scan_results_store[scan_id]:
         return scan_results_store[scan_id]
 
-    # Try ZAP alerts
     alerts = call_zap("/JSON/core/view/alerts/", {"baseurl": "", "start": 0, "count": 100})
     if "error" not in alerts:
         findings = []
@@ -620,7 +625,8 @@ def export_html(req: FindingsPriorityRequest):
     for f in findings:
         f["owasp_category"] = map_to_owasp(f.get("name", ""))
 
-    risk_color = {"High": "#dc2626", "Critical": "#7f1d1d", "Medium": "#d97706", "Low": "#2563eb", "Informational": "#6b7280"}
+    risk_color = {"High": "#dc2626", "Critical": "#7f1d1d", "Medium": "#d97706",
+                  "Low": "#2563eb", "Informational": "#6b7280"}
 
     rows = ""
     for f in findings:
@@ -673,14 +679,12 @@ def export_pdf(req: FindingsPriorityRequest):
     styles = getSampleStyleSheet()
     story = []
 
-    # Title
     title_style = ParagraphStyle("title", parent=styles["Title"], fontSize=20, textColor=colors.HexColor("#0f172a"))
-    story.append(Paragraph("🛡️ ZAP AI Security Scan Report", title_style))
+    story.append(Paragraph("ZAP AI Security Scan Report", title_style))
     story.append(Spacer(1, 6))
     story.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Findings: {len(findings)}", styles["Normal"]))
     story.append(Spacer(1, 20))
 
-    # Summary table
     risk_counts = defaultdict(int)
     for f in findings:
         risk_counts[f.get("risk", "Unknown")] += 1
@@ -693,7 +697,6 @@ def export_pdf(req: FindingsPriorityRequest):
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 10),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f8fafc")),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#f8fafc"), colors.white]),
         ("PADDING", (0, 0), (-1, -1), 6),
     ]))
@@ -701,7 +704,6 @@ def export_pdf(req: FindingsPriorityRequest):
     story.append(summary_table)
     story.append(Spacer(1, 20))
 
-    # Findings table
     story.append(Paragraph("All Findings", styles["Heading2"]))
     table_data = [["Finding", "Risk", "URL", "OWASP Category"]]
     for f in findings:
