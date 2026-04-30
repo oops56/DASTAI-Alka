@@ -54,22 +54,110 @@ NGROK_HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
+# OWASP Top 10 2025 — updated from 2021
+# Key changes:
+#   A02: Security Misconfiguration (was A05)
+#   A03: Software Supply Chain Failures (NEW)
+#   A04: Cryptographic Failures (was A02)
+#   A05: Injection (was A03)
+#   A06: Insecure Design (was A04)
+#   A08: Software and Data Integrity Failures removed → split into A03/A06
+#   A10: Mishandling of Exceptional Conditions (NEW)
+#   SSRF absorbed into A01: Broken Access Control
 OWASP_TOP10_MAP = {
-    "SQL Injection": "A03:2021 - Injection",
-    "XSS": "A03:2021 - Injection",
-    "Cross Site Scripting": "A03:2021 - Injection",
-    "Path Traversal": "A01:2021 - Broken Access Control",
-    "Broken Access Control": "A01:2021 - Broken Access Control",
-    "Sensitive Data Exposure": "A02:2021 - Cryptographic Failures",
-    "Security Misconfiguration": "A05:2021 - Security Misconfiguration",
-    "CSRF": "A01:2021 - Broken Access Control",
-    "XXE": "A05:2021 - Security Misconfiguration",
-    "Insecure Deserialization": "A08:2021 - Software and Data Integrity Failures",
-    "Vulnerable Components": "A06:2021 - Vulnerable and Outdated Components",
-    "Logging": "A09:2021 - Security Logging and Monitoring Failures",
-    "Authentication": "A07:2021 - Identification and Authentication Failures",
-    "SSRF": "A10:2021 - Server-Side Request Forgery",
-    "Cryptographic": "A02:2021 - Cryptographic Failures",
+    # A01:2025 - Broken Access Control (same position as 2021, now includes SSRF)
+    "Broken Access Control":            "A01:2025 - Broken Access Control",
+    "Path Traversal":                   "A01:2025 - Broken Access Control",
+    "Directory Traversal":              "A01:2025 - Broken Access Control",
+    "IDOR":                             "A01:2025 - Broken Access Control",
+    "CSRF":                             "A01:2025 - Broken Access Control",
+    "SSRF":                             "A01:2025 - Broken Access Control",  # absorbed from A10:2021
+    "Server Side Request Forgery":      "A01:2025 - Broken Access Control",
+    "Forced Browsing":                  "A01:2025 - Broken Access Control",
+
+    # A02:2025 - Security Misconfiguration (moved up from A05:2021)
+    "Security Misconfiguration":        "A02:2025 - Security Misconfiguration",
+    "XXE":                              "A02:2025 - Security Misconfiguration",
+    "XML External Entity":              "A02:2025 - Security Misconfiguration",
+    "Default Credentials":              "A02:2025 - Security Misconfiguration",
+    "Missing Header":                   "A02:2025 - Security Misconfiguration",
+    "X-Content-Type-Options":           "A02:2025 - Security Misconfiguration",
+    "X-Frame-Options":                  "A02:2025 - Security Misconfiguration",
+    "Content Security Policy":          "A02:2025 - Security Misconfiguration",
+    "HSTS":                             "A02:2025 - Security Misconfiguration",
+    "Cookie Without":                   "A02:2025 - Security Misconfiguration",
+    "Clickjacking":                     "A02:2025 - Security Misconfiguration",
+    "Open Redirect":                    "A02:2025 - Security Misconfiguration",
+
+    # A03:2025 - Software Supply Chain Failures (NEW in 2025)
+    "Supply Chain":                     "A03:2025 - Software Supply Chain Failures",
+    "Vulnerable Component":             "A03:2025 - Software Supply Chain Failures",
+    "Vulnerable and Outdated":          "A03:2025 - Software Supply Chain Failures",
+    "Outdated Library":                 "A03:2025 - Software Supply Chain Failures",
+    "Known Vulnerability":              "A03:2025 - Software Supply Chain Failures",
+    "Dependency":                       "A03:2025 - Software Supply Chain Failures",
+    "Third Party":                      "A03:2025 - Software Supply Chain Failures",
+
+    # A04:2025 - Cryptographic Failures (moved down from A02:2021)
+    "Cryptographic":                    "A04:2025 - Cryptographic Failures",
+    "Sensitive Data Exposure":          "A04:2025 - Cryptographic Failures",
+    "Cleartext":                        "A04:2025 - Cryptographic Failures",
+    "Weak Cipher":                      "A04:2025 - Cryptographic Failures",
+    "Weak SSL":                         "A04:2025 - Cryptographic Failures",
+    "Insecure TLS":                     "A04:2025 - Cryptographic Failures",
+    "Sensitive Data in URL":            "A04:2025 - Cryptographic Failures",
+    "Token Exposure":                   "A04:2025 - Cryptographic Failures",
+
+    # A05:2025 - Injection (moved down from A03:2021)
+    "SQL Injection":                    "A05:2025 - Injection",
+    "XSS":                              "A05:2025 - Injection",
+    "Cross Site Scripting":             "A05:2025 - Injection",
+    "Command Injection":                "A05:2025 - Injection",
+    "LDAP Injection":                   "A05:2025 - Injection",
+    "HTML Injection":                   "A05:2025 - Injection",
+    "Code Injection":                   "A05:2025 - Injection",
+    "Template Injection":               "A05:2025 - Injection",
+    "XPath Injection":                  "A05:2025 - Injection",
+
+    # A06:2025 - Insecure Design (moved from A04:2021)
+    "Insecure Design":                  "A06:2025 - Insecure Design",
+    "Business Logic":                   "A06:2025 - Insecure Design",
+    "Weak Password Policy":             "A06:2025 - Insecure Design",
+    "Password Policy":                  "A06:2025 - Insecure Design",
+    "Missing Rate Limit":               "A06:2025 - Insecure Design",
+    "Anti-CSRF":                        "A06:2025 - Insecure Design",
+    "Missing Anti-CSRF":                "A06:2025 - Insecure Design",
+
+    # A07:2025 - Authentication Failures (same position as 2021)
+    "Authentication":                   "A07:2025 - Authentication Failures",
+    "Session":                          "A07:2025 - Authentication Failures",
+    "Brute Force":                      "A07:2025 - Authentication Failures",
+    "Credential":                       "A07:2025 - Authentication Failures",
+    "Weak Password":                    "A07:2025 - Authentication Failures",
+    "Password Reset":                   "A07:2025 - Authentication Failures",
+    "MFA":                              "A07:2025 - Authentication Failures",
+
+    # A08:2025 - Data Integrity Failures (was A08:2021 Software and Data Integrity)
+    "Insecure Deserialization":         "A08:2025 - Data Integrity Failures",
+    "Deserialization":                  "A08:2025 - Data Integrity Failures",
+    "Integrity":                        "A08:2025 - Data Integrity Failures",
+    "Unsigned":                         "A08:2025 - Data Integrity Failures",
+    "CI/CD":                            "A08:2025 - Data Integrity Failures",
+
+    # A09:2025 - Security Logging & Alerting Failures (same position, renamed)
+    "Logging":                          "A09:2025 - Security Logging & Alerting Failures",
+    "Monitoring":                       "A09:2025 - Security Logging & Alerting Failures",
+    "Audit":                            "A09:2025 - Security Logging & Alerting Failures",
+    "Log":                              "A09:2025 - Security Logging & Alerting Failures",
+
+    # A10:2025 - Mishandling of Exceptional Conditions (NEW in 2025)
+    "Error Handling":                   "A10:2025 - Mishandling of Exceptional Conditions",
+    "Exception":                        "A10:2025 - Mishandling of Exceptional Conditions",
+    "Information Disclosure":           "A10:2025 - Mishandling of Exceptional Conditions",
+    "Debug":                            "A10:2025 - Mishandling of Exceptional Conditions",
+    "Stack Trace":                      "A10:2025 - Mishandling of Exceptional Conditions",
+    "Server Leaks":                     "A10:2025 - Mishandling of Exceptional Conditions",
+    "Version Information":              "A10:2025 - Mishandling of Exceptional Conditions",
 }
 
 # In-memory scan result store
@@ -214,7 +302,7 @@ def map_to_owasp(finding_name: str) -> str:
     for key, category in OWASP_TOP10_MAP.items():
         if key.lower() in finding_name.lower():
             return category
-    return "A05:2021 - Security Misconfiguration"
+    return "A02:2025 - Security Misconfiguration"
 
 
 def severity_score(risk: str) -> int:
@@ -411,7 +499,14 @@ For each finding provide:
 - Exploitability (1-10)
 - Impact (1-10)
 - Priority rank (1=highest)
+- OWASP Top 10 2025 category (A01-A10:2025)
 - Brief justification (1 sentence)
+
+OWASP Top 10 2025 reference:
+A01 Broken Access Control | A02 Security Misconfiguration | A03 Software Supply Chain Failures
+A04 Cryptographic Failures | A05 Injection | A06 Insecure Design
+A07 Authentication Failures | A08 Data Integrity Failures
+A09 Security Logging & Alerting Failures | A10 Mishandling of Exceptional Conditions
 
 Format as numbered list. Be concise."""
 
