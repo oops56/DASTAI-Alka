@@ -41,9 +41,9 @@ app.add_middleware(
 )
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
-ZAP_BASE_URL = "http://localhost:8080"
+ZAP_BASE_URL = "https://explanation-donor-seen-eos.trycloudflare.com"
 ZAP_API_KEY = "changeme"
-OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_URL = "https://cult-canberra-ranking-antenna.trycloudflare.com"
 OLLAMA_MODEL = "tinyllama"
 
 OWASP_TOP10_MAP = {
@@ -73,7 +73,7 @@ class ScanRequest(BaseModel):
     target_url: str
     scan_type: str = "full"  # full, passive, active
     zap_api_key: str = "changeme"
-    zap_url: str = "http://localhost:8080"
+    zap_url: str = "https://explanation-donor-seen-eos.trycloudflare.com"
     ollama_url: str = "http://localhost:11434"
 
 class LogAnalysisRequest(BaseModel):
@@ -93,7 +93,7 @@ class PolicyOptRequest(BaseModel):
 def call_ollama(prompt):
     try:
         response = requests.post(
-            "http://localhost:11434/api/generate",
+            "https://cult-canberra-ranking-antenna.trycloudflare.com",
             json={
                 "model": "tinyllama",
                 "prompt": prompt,
