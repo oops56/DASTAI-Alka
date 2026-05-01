@@ -44,8 +44,8 @@ app.add_middleware(
 # ─── Configuration ─────────────────────────────────────────────────────────────
 # Using localhost.run tunnels (ssh -R 80:localhost:PORT nokey@localhost.run)
 # Update these URLs each session when you start new tunnels
-ZAP_BASE_URL    = "https://a68a08121a0072.lhr.life"       # ← your ZAP localhost.run URL
-OLLAMA_BASE_URL = "https://afddd0c7b9c51c.lhr.life"       # ← your Ollama localhost.run URL
+ZAP_BASE_URL    = "https://4e73f4c72320b8.lhr.life"       # ← your ZAP localhost.run URL
+OLLAMA_BASE_URL = "https://4015f4be7a11f9.lhr.life"       # ← your Ollama localhost.run URL
 OLLAMA_URL      = f"{OLLAMA_BASE_URL}/api/generate"
 ZAP_API_KEY     = "changeme"
 OLLAMA_MODEL    = "tinyllama"
