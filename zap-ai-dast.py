@@ -43,7 +43,7 @@ app.add_middleware(
 # ─── Configuration ─────────────────────────────────────────────────────────────
 # FIX 1: ZAP and Ollama must have DIFFERENT URLs — they were both set to the same ngrok URL
 ZAP_BASE_URL = "https://equivocal-scariness-rental.ngrok-free.dev"   # ← your ZAP ngrok URL
-OLLAMA_BASE_URL = "https://YOUR-OLLAMA-NGROK-URL.ngrok-free.dev"     # ← your Ollama ngrok URL (different!)
+OLLAMA_BASE_URL = "https://equivocal-scariness-rental.ngrok-free.dev"     # ← your Ollama ngrok URL (different!)
 OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
 ZAP_API_KEY = "changeme"
 OLLAMA_MODEL = "tinyllama"
