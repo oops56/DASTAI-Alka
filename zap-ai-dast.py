@@ -1,6 +1,7 @@
 """
 ZAP AI Security Scanner - FastAPI Backend
 Integrates OWASP ZAP + TinyLlama for intelligent scan analysis
+Tunneling: localhost.run (ssh -R 80:localhost:PORT nokey@localhost.run)
 """
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -41,123 +42,122 @@ app.add_middleware(
 )
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
-# FIX 1: ZAP and Ollama must have DIFFERENT URLs — they were both set to the same ngrok URL
-ZAP_BASE_URL = "https://equivocal-scariness-rental.ngrok-free.dev"   # ← your ZAP ngrok URL
-OLLAMA_BASE_URL = "https://afddd0c7b9c51c.lhr.life"     # ← your Ollama ngrok URL (different!)
-OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
-ZAP_API_KEY = "changeme"
-OLLAMA_MODEL = "tinyllama"
+# Using localhost.run tunnels (ssh -R 80:localhost:PORT nokey@localhost.run)
+# Update these URLs each session when you start new tunnels
+ZAP_BASE_URL    = "https://a68a08121a0072.lhr.life"       # ← your ZAP localhost.run URL
+OLLAMA_BASE_URL = "https://afddd0c7b9c51c.lhr.life"       # ← your Ollama localhost.run URL
+OLLAMA_URL      = f"{OLLAMA_BASE_URL}/api/generate"
+ZAP_API_KEY     = "changeme"
+OLLAMA_MODEL    = "tinyllama"
 
-# Shared ngrok headers
-NGROK_HEADERS = {
-    "ngrok-skip-browser-warning": "true",
-    "User-Agent": "Mozilla/5.0"
+# ── Tunnel headers ──────────────────────────────────────────────────────────────
+# localhost.run uses standard SSH tunneling — no special headers required
+# unlike ngrok which needed "ngrok-skip-browser-warning: true"
+TUNNEL_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept":     "application/json",
 }
 
-# OWASP Top 10 2025 — updated from 2021
-# Key changes:
-#   A02: Security Misconfiguration (was A05)
-#   A03: Software Supply Chain Failures (NEW)
-#   A04: Cryptographic Failures (was A02)
-#   A05: Injection (was A03)
-#   A06: Insecure Design (was A04)
-#   A08: Software and Data Integrity Failures removed → split into A03/A06
-#   A10: Mishandling of Exceptional Conditions (NEW)
+# ─── OWASP Top 10 2025 ─────────────────────────────────────────────────────────
+# Key changes from 2021:
+#   A02: Security Misconfiguration (was A05)   A03: Software Supply Chain Failures (NEW)
+#   A04: Cryptographic Failures (was A02)      A05: Injection (was A03)
+#   A06: Insecure Design (was A04)             A10: Mishandling of Exceptional Conditions (NEW)
 #   SSRF absorbed into A01: Broken Access Control
 OWASP_TOP10_MAP = {
-    # A01:2025 - Broken Access Control (same position as 2021, now includes SSRF)
-    "Broken Access Control":            "A01:2025 - Broken Access Control",
-    "Path Traversal":                   "A01:2025 - Broken Access Control",
-    "Directory Traversal":              "A01:2025 - Broken Access Control",
-    "IDOR":                             "A01:2025 - Broken Access Control",
-    "CSRF":                             "A01:2025 - Broken Access Control",
-    "SSRF":                             "A01:2025 - Broken Access Control",  # absorbed from A10:2021
-    "Server Side Request Forgery":      "A01:2025 - Broken Access Control",
-    "Forced Browsing":                  "A01:2025 - Broken Access Control",
+    # A01:2025 - Broken Access Control (same position, now includes SSRF)
+    "Broken Access Control":        "A01:2025 - Broken Access Control",
+    "Path Traversal":               "A01:2025 - Broken Access Control",
+    "Directory Traversal":          "A01:2025 - Broken Access Control",
+    "IDOR":                         "A01:2025 - Broken Access Control",
+    "CSRF":                         "A01:2025 - Broken Access Control",
+    "SSRF":                         "A01:2025 - Broken Access Control",
+    "Server Side Request Forgery":  "A01:2025 - Broken Access Control",
+    "Forced Browsing":              "A01:2025 - Broken Access Control",
 
     # A02:2025 - Security Misconfiguration (moved up from A05:2021)
-    "Security Misconfiguration":        "A02:2025 - Security Misconfiguration",
-    "XXE":                              "A02:2025 - Security Misconfiguration",
-    "XML External Entity":              "A02:2025 - Security Misconfiguration",
-    "Default Credentials":              "A02:2025 - Security Misconfiguration",
-    "Missing Header":                   "A02:2025 - Security Misconfiguration",
-    "X-Content-Type-Options":           "A02:2025 - Security Misconfiguration",
-    "X-Frame-Options":                  "A02:2025 - Security Misconfiguration",
-    "Content Security Policy":          "A02:2025 - Security Misconfiguration",
-    "HSTS":                             "A02:2025 - Security Misconfiguration",
-    "Cookie Without":                   "A02:2025 - Security Misconfiguration",
-    "Clickjacking":                     "A02:2025 - Security Misconfiguration",
-    "Open Redirect":                    "A02:2025 - Security Misconfiguration",
+    "Security Misconfiguration":    "A02:2025 - Security Misconfiguration",
+    "XXE":                          "A02:2025 - Security Misconfiguration",
+    "XML External Entity":          "A02:2025 - Security Misconfiguration",
+    "Default Credentials":          "A02:2025 - Security Misconfiguration",
+    "Missing Header":               "A02:2025 - Security Misconfiguration",
+    "X-Content-Type-Options":       "A02:2025 - Security Misconfiguration",
+    "X-Frame-Options":              "A02:2025 - Security Misconfiguration",
+    "Content Security Policy":      "A02:2025 - Security Misconfiguration",
+    "HSTS":                         "A02:2025 - Security Misconfiguration",
+    "Cookie Without":               "A02:2025 - Security Misconfiguration",
+    "Clickjacking":                 "A02:2025 - Security Misconfiguration",
+    "Open Redirect":                "A02:2025 - Security Misconfiguration",
 
-    # A03:2025 - Software Supply Chain Failures (NEW in 2025)
-    "Supply Chain":                     "A03:2025 - Software Supply Chain Failures",
-    "Vulnerable Component":             "A03:2025 - Software Supply Chain Failures",
-    "Vulnerable and Outdated":          "A03:2025 - Software Supply Chain Failures",
-    "Outdated Library":                 "A03:2025 - Software Supply Chain Failures",
-    "Known Vulnerability":              "A03:2025 - Software Supply Chain Failures",
-    "Dependency":                       "A03:2025 - Software Supply Chain Failures",
-    "Third Party":                      "A03:2025 - Software Supply Chain Failures",
+    # A03:2025 - Software Supply Chain Failures (NEW)
+    "Supply Chain":                 "A03:2025 - Software Supply Chain Failures",
+    "Vulnerable Component":         "A03:2025 - Software Supply Chain Failures",
+    "Vulnerable and Outdated":      "A03:2025 - Software Supply Chain Failures",
+    "Outdated Library":             "A03:2025 - Software Supply Chain Failures",
+    "Known Vulnerability":          "A03:2025 - Software Supply Chain Failures",
+    "Dependency":                   "A03:2025 - Software Supply Chain Failures",
+    "Third Party":                  "A03:2025 - Software Supply Chain Failures",
 
-    # A04:2025 - Cryptographic Failures (moved down from A02:2021)
-    "Cryptographic":                    "A04:2025 - Cryptographic Failures",
-    "Sensitive Data Exposure":          "A04:2025 - Cryptographic Failures",
-    "Cleartext":                        "A04:2025 - Cryptographic Failures",
-    "Weak Cipher":                      "A04:2025 - Cryptographic Failures",
-    "Weak SSL":                         "A04:2025 - Cryptographic Failures",
-    "Insecure TLS":                     "A04:2025 - Cryptographic Failures",
-    "Sensitive Data in URL":            "A04:2025 - Cryptographic Failures",
-    "Token Exposure":                   "A04:2025 - Cryptographic Failures",
+    # A04:2025 - Cryptographic Failures (moved from A02:2021)
+    "Cryptographic":                "A04:2025 - Cryptographic Failures",
+    "Sensitive Data Exposure":      "A04:2025 - Cryptographic Failures",
+    "Cleartext":                    "A04:2025 - Cryptographic Failures",
+    "Weak Cipher":                  "A04:2025 - Cryptographic Failures",
+    "Weak SSL":                     "A04:2025 - Cryptographic Failures",
+    "Insecure TLS":                 "A04:2025 - Cryptographic Failures",
+    "Sensitive Data in URL":        "A04:2025 - Cryptographic Failures",
+    "Token Exposure":               "A04:2025 - Cryptographic Failures",
 
-    # A05:2025 - Injection (moved down from A03:2021)
-    "SQL Injection":                    "A05:2025 - Injection",
-    "XSS":                              "A05:2025 - Injection",
-    "Cross Site Scripting":             "A05:2025 - Injection",
-    "Command Injection":                "A05:2025 - Injection",
-    "LDAP Injection":                   "A05:2025 - Injection",
-    "HTML Injection":                   "A05:2025 - Injection",
-    "Code Injection":                   "A05:2025 - Injection",
-    "Template Injection":               "A05:2025 - Injection",
-    "XPath Injection":                  "A05:2025 - Injection",
+    # A05:2025 - Injection (moved from A03:2021)
+    "SQL Injection":                "A05:2025 - Injection",
+    "XSS":                          "A05:2025 - Injection",
+    "Cross Site Scripting":         "A05:2025 - Injection",
+    "Command Injection":            "A05:2025 - Injection",
+    "LDAP Injection":               "A05:2025 - Injection",
+    "HTML Injection":               "A05:2025 - Injection",
+    "Code Injection":               "A05:2025 - Injection",
+    "Template Injection":           "A05:2025 - Injection",
+    "XPath Injection":              "A05:2025 - Injection",
 
     # A06:2025 - Insecure Design (moved from A04:2021)
-    "Insecure Design":                  "A06:2025 - Insecure Design",
-    "Business Logic":                   "A06:2025 - Insecure Design",
-    "Weak Password Policy":             "A06:2025 - Insecure Design",
-    "Password Policy":                  "A06:2025 - Insecure Design",
-    "Missing Rate Limit":               "A06:2025 - Insecure Design",
-    "Anti-CSRF":                        "A06:2025 - Insecure Design",
-    "Missing Anti-CSRF":                "A06:2025 - Insecure Design",
+    "Insecure Design":              "A06:2025 - Insecure Design",
+    "Business Logic":               "A06:2025 - Insecure Design",
+    "Weak Password Policy":         "A06:2025 - Insecure Design",
+    "Password Policy":              "A06:2025 - Insecure Design",
+    "Missing Rate Limit":           "A06:2025 - Insecure Design",
+    "Anti-CSRF":                    "A06:2025 - Insecure Design",
+    "Missing Anti-CSRF":            "A06:2025 - Insecure Design",
 
-    # A07:2025 - Authentication Failures (same position as 2021)
-    "Authentication":                   "A07:2025 - Authentication Failures",
-    "Session":                          "A07:2025 - Authentication Failures",
-    "Brute Force":                      "A07:2025 - Authentication Failures",
-    "Credential":                       "A07:2025 - Authentication Failures",
-    "Weak Password":                    "A07:2025 - Authentication Failures",
-    "Password Reset":                   "A07:2025 - Authentication Failures",
-    "MFA":                              "A07:2025 - Authentication Failures",
+    # A07:2025 - Authentication Failures (same position)
+    "Authentication":               "A07:2025 - Authentication Failures",
+    "Session":                      "A07:2025 - Authentication Failures",
+    "Brute Force":                  "A07:2025 - Authentication Failures",
+    "Credential":                   "A07:2025 - Authentication Failures",
+    "Weak Password":                "A07:2025 - Authentication Failures",
+    "Password Reset":               "A07:2025 - Authentication Failures",
+    "MFA":                          "A07:2025 - Authentication Failures",
 
-    # A08:2025 - Data Integrity Failures (was A08:2021 Software and Data Integrity)
-    "Insecure Deserialization":         "A08:2025 - Data Integrity Failures",
-    "Deserialization":                  "A08:2025 - Data Integrity Failures",
-    "Integrity":                        "A08:2025 - Data Integrity Failures",
-    "Unsigned":                         "A08:2025 - Data Integrity Failures",
-    "CI/CD":                            "A08:2025 - Data Integrity Failures",
+    # A08:2025 - Data Integrity Failures
+    "Insecure Deserialization":     "A08:2025 - Data Integrity Failures",
+    "Deserialization":              "A08:2025 - Data Integrity Failures",
+    "Integrity":                    "A08:2025 - Data Integrity Failures",
+    "Unsigned":                     "A08:2025 - Data Integrity Failures",
+    "CI/CD":                        "A08:2025 - Data Integrity Failures",
 
-    # A09:2025 - Security Logging & Alerting Failures (same position, renamed)
-    "Logging":                          "A09:2025 - Security Logging & Alerting Failures",
-    "Monitoring":                       "A09:2025 - Security Logging & Alerting Failures",
-    "Audit":                            "A09:2025 - Security Logging & Alerting Failures",
-    "Log":                              "A09:2025 - Security Logging & Alerting Failures",
+    # A09:2025 - Security Logging & Alerting Failures (renamed from 2021)
+    "Logging":                      "A09:2025 - Security Logging & Alerting Failures",
+    "Monitoring":                   "A09:2025 - Security Logging & Alerting Failures",
+    "Audit":                        "A09:2025 - Security Logging & Alerting Failures",
+    "Log":                          "A09:2025 - Security Logging & Alerting Failures",
 
-    # A10:2025 - Mishandling of Exceptional Conditions (NEW in 2025)
-    "Error Handling":                   "A10:2025 - Mishandling of Exceptional Conditions",
-    "Exception":                        "A10:2025 - Mishandling of Exceptional Conditions",
-    "Information Disclosure":           "A10:2025 - Mishandling of Exceptional Conditions",
-    "Debug":                            "A10:2025 - Mishandling of Exceptional Conditions",
-    "Stack Trace":                      "A10:2025 - Mishandling of Exceptional Conditions",
-    "Server Leaks":                     "A10:2025 - Mishandling of Exceptional Conditions",
-    "Version Information":              "A10:2025 - Mishandling of Exceptional Conditions",
+    # A10:2025 - Mishandling of Exceptional Conditions (NEW)
+    "Error Handling":               "A10:2025 - Mishandling of Exceptional Conditions",
+    "Exception":                    "A10:2025 - Mishandling of Exceptional Conditions",
+    "Information Disclosure":       "A10:2025 - Mishandling of Exceptional Conditions",
+    "Debug":                        "A10:2025 - Mishandling of Exceptional Conditions",
+    "Stack Trace":                  "A10:2025 - Mishandling of Exceptional Conditions",
+    "Server Leaks":                 "A10:2025 - Mishandling of Exceptional Conditions",
+    "Version Information":          "A10:2025 - Mishandling of Exceptional Conditions",
 }
 
 # In-memory scan result store
@@ -186,10 +186,8 @@ class PolicyOptRequest(BaseModel):
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 
-# FIX 2: call_ollama had wrong variable name 'url' (undefined), missing return statement,
-#         and broken indentation
 def call_ollama(prompt: str, ollama_url: str = None) -> str:
-    """Call TinyLlama via Ollama."""
+    """Call TinyLlama via Ollama through localhost.run tunnel."""
     url = ollama_url or OLLAMA_URL
     try:
         resp = requests.post(
@@ -201,20 +199,21 @@ def call_ollama(prompt: str, ollama_url: str = None) -> str:
                 "options": {"temperature": 0.3, "num_predict": 512}
             },
             timeout=60,
-            headers=NGROK_HEADERS
+            headers=TUNNEL_HEADERS
         )
         if resp.status_code == 200:
             return resp.json().get("response", "").strip()
         return f"[AI Error: HTTP {resp.status_code}]"
     except requests.exceptions.ConnectionError:
-        return "[AI Unavailable: Ollama not running - using rule-based fallback]"
+        return "[AI Unavailable: Ollama tunnel not reachable - using rule-based fallback]"
+    except requests.exceptions.Timeout:
+        return "[AI Timeout: TinyLlama took too long - using rule-based fallback]"
     except Exception as e:
         return f"[AI Error: {str(e)}]"
 
 
-# FIX 3: call_zap had missing comma in headers dict (syntax error)
 def call_zap(endpoint: str, params: dict = None, zap_url: str = None, api_key: str = None):
-    """Call OWASP ZAP REST API."""
+    """Call OWASP ZAP REST API through localhost.run tunnel."""
     base = (zap_url or ZAP_BASE_URL).rstrip("/")
     p = params or {}
     p["apikey"] = api_key or ZAP_API_KEY
@@ -223,7 +222,8 @@ def call_zap(endpoint: str, params: dict = None, zap_url: str = None, api_key: s
             f"{base}{endpoint}",
             params=p,
             timeout=30,
-            headers=NGROK_HEADERS  # FIX: was missing comma between header keys
+            headers=TUNNEL_HEADERS,
+            allow_redirects=True
         )
         return resp.json()
     except Exception as e:
@@ -232,7 +232,7 @@ def call_zap(endpoint: str, params: dict = None, zap_url: str = None, api_key: s
 
 def mock_findings_if_zap_unavailable() -> List[Dict[str, Any]]:
     """Generate realistic mock findings when ZAP is not available."""
-    mock = [
+    return [
         {"id": "1", "name": "SQL Injection", "risk": "High", "confidence": "High",
          "url": "/api/users?id=1", "description": "SQL injection in user ID parameter",
          "solution": "Use parameterized queries", "cweid": "89", "wascid": "19",
@@ -274,7 +274,6 @@ def mock_findings_if_zap_unavailable() -> List[Dict[str, Any]]:
          "solution": "Disable debug mode in production", "cweid": "209", "wascid": "13",
          "count": 6, "manual_severity": "Low"},
     ]
-    return mock
 
 
 def mock_auth_logs() -> str:
@@ -306,27 +305,28 @@ def map_to_owasp(finding_name: str) -> str:
 
 
 def severity_score(risk: str) -> int:
-    return {"High": 4, "Critical": 5, "Medium": 3, "Low": 2, "Informational": 1}.get(risk, 1)
+    return {"Critical": 5, "High": 4, "Medium": 3, "Low": 2, "Informational": 1}.get(risk, 1)
 
 
 # ─── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/")
 def root():
-    return {"status": "ZAP AI Security Scanner running", "version": "1.0.0"}
+    return {"status": "ZAP AI Security Scanner running", "version": "1.0.0",
+            "tunnel": "localhost.run"}
 
 
-# FIX 4: health() was using hardcoded localhost instead of the global ZAP/Ollama URLs
-#         and missing ngrok headers so requests were being blocked
 @app.get("/health")
 def health():
+    """Health check using localhost.run tunnel URLs — no ngrok headers needed."""
     zap_ok = False
     ollama_ok = False
     try:
         r = requests.get(
             f"{ZAP_BASE_URL}/JSON/core/view/version/?apikey={ZAP_API_KEY}",
-            timeout=5,
-            headers=NGROK_HEADERS
+            timeout=8,
+            headers=TUNNEL_HEADERS,
+            allow_redirects=True
         )
         zap_ok = r.status_code == 200
     except:
@@ -334,13 +334,19 @@ def health():
     try:
         r = requests.get(
             f"{OLLAMA_BASE_URL}/api/tags",
-            timeout=5,
-            headers=NGROK_HEADERS
+            timeout=8,
+            headers=TUNNEL_HEADERS
         )
         ollama_ok = r.status_code == 200
     except:
         pass
-    return {"zap": zap_ok, "ollama": ollama_ok, "reportlab": REPORTLAB_AVAILABLE}
+    return {
+        "zap": zap_ok,
+        "ollama": ollama_ok,
+        "reportlab": REPORTLAB_AVAILABLE,
+        "zap_url": ZAP_BASE_URL,
+        "ollama_url": OLLAMA_BASE_URL
+    }
 
 
 # ── 1. AUTHENTICATION RESEARCH ──────────────────────────────────────────────────
@@ -390,7 +396,6 @@ Provide:
 4. Recommended mitigations
 Be concise."""
 
-    # FIX 5: call_ollama was called with wrong second argument — it takes ollama_url not logs
     ai_analysis = call_ollama(prompt)
 
     if not ai_analysis or "Unavailable" in ai_analysis or "Error" in ai_analysis:
@@ -451,11 +456,10 @@ Be concise and specific."""
 
     manual_fp_count = sum(1 for f in findings if f.get("manual_severity", "") == "Informational"
                           and f.get("risk", "") != "Informational")
-    ai_estimated_fp_pct = 25
 
     comparison = {
         "manual_fp_identified": manual_fp_count,
-        "ai_estimated_fp_percentage": ai_estimated_fp_pct,
+        "ai_estimated_fp_percentage": 25,
         "informational_count": len(informational),
         "low_risk_count": len(low_risk),
         "duplicate_groups": len(duplicates),
@@ -579,7 +583,7 @@ Be specific and actionable."""
 
     disabled_rules = []
     if "api" in target.lower() or app_type == "api":
-        disabled_rules.append({"rule": "Cookie Slack Detector", "reason": "API apps use tokens, not cookies"})
+        disabled_rules.append({"rule": "Cookie Slack Detector", "reason": "API apps use tokens not cookies"})
         disabled_rules.append({"rule": "Viewstate Scanner", "reason": "Not applicable to REST APIs"})
     if app_type == "spa":
         disabled_rules.append({"rule": "AJAX Spider passive scan", "reason": "SPA crawl handled by JS engine"})
@@ -596,8 +600,8 @@ Be specific and actionable."""
             "original": {"runtime_seconds": original_runtime, "findings_count": original_findings},
             "optimized": {"runtime_seconds": optimized_runtime, "findings_count": optimized_findings},
             "improvement": {
-                "runtime_reduction_pct": round((1 - optimized_runtime/original_runtime)*100, 1),
-                "noise_reduction_pct": round((1 - optimized_findings/original_findings)*100, 1)
+                "runtime_reduction_pct": round((1 - optimized_runtime / original_runtime) * 100, 1),
+                "noise_reduction_pct": round((1 - optimized_findings / original_findings) * 100, 1)
             }
         },
         "timestamp": datetime.now().isoformat()
@@ -617,14 +621,17 @@ def start_scan(req: ScanRequest):
     """Start a ZAP scan on the target URL."""
     global ZAP_BASE_URL, ZAP_API_KEY, OLLAMA_URL, OLLAMA_BASE_URL
 
-    ZAP_BASE_URL = req.zap_url.rstrip("/")
-    ZAP_API_KEY = req.zap_api_key
+    ZAP_BASE_URL    = req.zap_url.rstrip("/")
+    ZAP_API_KEY     = req.zap_api_key
     OLLAMA_BASE_URL = req.ollama_url.rstrip("/")
-    OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
+    OLLAMA_URL      = f"{OLLAMA_BASE_URL}/api/generate"
 
-    spider_resp = call_zap("/JSON/spider/action/scan/",
-                           {"url": req.target_url, "maxChildren": 10},
-                           zap_url=req.zap_url, api_key=req.zap_api_key)
+    spider_resp = call_zap(
+        "/JSON/spider/action/scan/",
+        {"url": req.target_url, "maxChildren": 10},
+        zap_url=req.zap_url,
+        api_key=req.zap_api_key
+    )
 
     if "error" in spider_resp:
         scan_id = f"mock_{int(time.time())}"
@@ -636,7 +643,7 @@ def start_scan(req: ScanRequest):
             "mode": "mock"
         }
         return {"scan_id": scan_id, "status": "complete", "mode": "mock",
-                "message": "ZAP unavailable - using mock data for demonstration"}
+                "message": "ZAP unavailable — using mock data for demonstration"}
 
     scan_id = str(spider_resp.get("scan", "0"))
     scan_results_store[scan_id] = {"status": "running", "target": req.target_url, "mode": "live"}
@@ -688,7 +695,8 @@ def export_csv(req: FindingsPriorityRequest):
         f["owasp_category"] = map_to_owasp(f.get("name", ""))
 
     output = io.StringIO()
-    fields = ["id", "name", "risk", "confidence", "url", "owasp_category", "description", "solution", "cweid", "count"]
+    fields = ["id", "name", "risk", "confidence", "url", "owasp_category",
+              "description", "solution", "cweid", "count"]
     writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(findings)
@@ -727,12 +735,12 @@ def export_html(req: FindingsPriorityRequest):
     for f in findings:
         color = risk_color.get(f.get("risk", ""), "#6b7280")
         rows += f"""<tr>
-            <td>{f.get('name','')}</td>
-            <td style="color:{color};font-weight:bold">{f.get('risk','')}</td>
-            <td>{f.get('confidence','')}</td>
-            <td><code>{f.get('url','')}</code></td>
-            <td>{f.get('owasp_category','')}</td>
-            <td>{f.get('description','')[:80]}...</td>
+            <td>{f.get('name', '')}</td>
+            <td style="color:{color};font-weight:bold">{f.get('risk', '')}</td>
+            <td>{f.get('confidence', '')}</td>
+            <td><code>{f.get('url', '')}</code></td>
+            <td>{f.get('owasp_category', '')}</td>
+            <td>{f.get('description', '')[:80]}...</td>
         </tr>"""
 
     html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -750,7 +758,7 @@ code{{background:#f1f5f9;padding:.1rem .3rem;border-radius:3px;font-size:.8rem}}
 <h1>🛡️ ZAP AI Security Scan Report</h1>
 <p class="meta">Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Total Findings: {len(findings)}</p>
 <table><thead><tr>
-<th>Finding</th><th>Risk</th><th>Confidence</th><th>URL</th><th>OWASP</th><th>Description</th>
+<th>Finding</th><th>Risk</th><th>Confidence</th><th>URL</th><th>OWASP 2025</th><th>Description</th>
 </tr></thead><tbody>{rows}</tbody></table></body></html>"""
 
     return StreamingResponse(
@@ -770,14 +778,19 @@ def export_pdf(req: FindingsPriorityRequest):
         f["owasp_category"] = map_to_owasp(f.get("name", ""))
 
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=50, bottomMargin=40)
+    doc = SimpleDocTemplate(buffer, pagesize=A4,
+                            rightMargin=40, leftMargin=40, topMargin=50, bottomMargin=40)
     styles = getSampleStyleSheet()
     story = []
 
-    title_style = ParagraphStyle("title", parent=styles["Title"], fontSize=20, textColor=colors.HexColor("#0f172a"))
-    story.append(Paragraph("ZAP AI Security Scan Report", title_style))
+    title_style = ParagraphStyle("title", parent=styles["Title"], fontSize=20,
+                                 textColor=colors.HexColor("#0f172a"))
+    story.append(Paragraph("ZAP AI Security Scan Report — OWASP Top 10 2025", title_style))
     story.append(Spacer(1, 6))
-    story.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Findings: {len(findings)}", styles["Normal"]))
+    story.append(Paragraph(
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Findings: {len(findings)}",
+        styles["Normal"]
+    ))
     story.append(Spacer(1, 20))
 
     risk_counts = defaultdict(int)
@@ -799,17 +812,17 @@ def export_pdf(req: FindingsPriorityRequest):
     story.append(summary_table)
     story.append(Spacer(1, 20))
 
-    story.append(Paragraph("All Findings", styles["Heading2"]))
-    table_data = [["Finding", "Risk", "URL", "OWASP Category"]]
+    story.append(Paragraph("All Findings — OWASP Top 10 2025 Mapped", styles["Heading2"]))
+    table_data = [["Finding", "Risk", "URL", "OWASP 2025 Category"]]
     for f in findings:
         table_data.append([
             Paragraph(f.get("name", "")[:50], styles["Normal"]),
             f.get("risk", ""),
             Paragraph(f.get("url", "")[:40], styles["Normal"]),
-            Paragraph(f.get("owasp_category", "")[:35], styles["Normal"]),
+            Paragraph(f.get("owasp_category", "")[:40], styles["Normal"]),
         ])
 
-    findings_table = Table(table_data, colWidths=[160, 60, 130, 140])
+    findings_table = Table(table_data, colWidths=[155, 55, 125, 155])
     findings_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e3a5f")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
